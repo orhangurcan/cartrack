@@ -27,7 +27,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install --disable-pip-version-check -r requirements.txt
-      - name: Build encrypted diagnostic
+      - name: Compare verified old baseline to current search
         env:
           SEARCHES_JSON: ${{ secrets.searchesjson }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
@@ -36,79 +36,84 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import base64, json, os
+          import base64, hashlib, hmac, json, os, zlib
           import requests
           from cryptography.hazmat.primitives import hashes, serialization
           from cryptography.hazmat.primitives.asymmetric import padding
-          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
           import watcher
 
-          public_pem = b'''-----BEGIN PUBLIC KEY-----
-          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqp0UeCMPcbaRShbfHv5a
-          yad7CNHFuJNNrAUQohjiS7vETMTFC37o5Ise19Yjql1nh50Ugnd5AEw5kRFRt6Nm
-          4E0yXTZ96MajZnuDWsuTFxsp2L5YX6ay1Vwc8u8dqpAz9zYFIvl/Vy0s/tX9BfY4
-          lOGqNtkfkDkBeIWDb1QFZW7V2AMtF219o7FlpUbOOgwxsVNu+v2ABNNGgq0lpMZr
-          SETJNdsY7c0TmQj1TVAVXOfrPC4b4S0hKTsEfLcdog6T87E6UkIjqkaXV7i9MsCO
-          watYwg7VjHY81LVQzh+tgUlT9Te9WRs5VbMZYJVFGi7DUzJv5/p8ltP2Arc6L3oC
-          eQIDAQAB
+          OLD_SEEN = {
+            '0869ae6b55e89a0bc12028adddf2e2861013766acab47205db0108879fd6f69d','0ab986548db2e3ae54508b932fee937008cf696ba7a1fd831474c5641a580dc3','0b0e0e3a68c7c56cfbf888f0452cae641c3083aae47afea56149c9715d033fe3','16f0b380524d18908573f563de49c58ad3aa9a48f9cbf6aabb9770be992541a3','1b6f5bb3b4977a3fad752d12dfac6deda8cebc1b53dbc77b37af8dc215714cde','1c788b2b84dae772538a06a60122193fbe2f983ade919e11995e10b2ad74f44e','24016f57de9a13bdbb46e602389470a5bef49f15d8b25389cc581132f40f3eb9','24b2e71407925c10dc532c019bf49ca01bc4c446daf8b7a0fe8dfebb31b99a58','36e058dff20b1172e92fe6b34fbd27f256ccde6aaaa0896d24c9603cdc4855ef','3874e160b8e082d59bc637de0c970f41dc44ef8570a3b6fd9a2f4820b56f78f6','45e18e85d2ef6b55230786b2dcd433e955f329781d801e2b6c40a5855339a190','4f8460a3426b40fd1bb1246a33ca155a9d0bf883d8fce6bec36b3ea360e47b42','546443ae13caf6ac20d853b13f90333aade2e63143200f1e764897e29b96ceea','6157a0e7018cd7cc964d76cf372ccafb1e7830ce9ca11909274ee43f58214b35','675620a65d9eb6e12e550687709ad8029b76c797a923e48400440242f350b269','828174e424db3e491923c6347ae95b69c415a613d86c9e158655c26b325ff4d7','913783b7c80e5378ce211cb048dec2a4a5f14388435caf6bc786516b034ece74','9e328fe41dfe006072bba429daaafceb50ab385e3ec619c7fdc0f1452f7c14b6','a3a83a616e0c5385c83f2b4725849c644d2883c48dc1ed42a44ee20a0b15b7ff','b64cccc65f6a9f6375edbcdaccee6a283f37483f8e1b52789081ebd82aa97c09','d382f6ee4d76f5e7dffc045079c42b64e1f54c65a18e100bd3debec6404ddd6e','d580aa366015528524f4213acea8230a5b5aba99b0f301c71ab4b0099de57e09','e18ff2e06be17f2d3a8f4b93a08f04adf1a1502bc74577057eb2172a8655675b','e196472bc75e12654f60f669cdba9409a32328ad31a1f121b06b8df98127b263','e57c974b15b036925eb7ab3ba28c51154b5e7e5c126dd2484266cc0dd7d44098','f044e0296a607fa9dd6e7e52c31d793d74b176068bb9b3ebd4e80b4ca44e5d43','f198edde8dfe5657bf0d585b1765cb3e71e39643ce11a26e57e5aa5a7a610334','f323b27ea7f6433eaa98a0762fedc197a5e9ce9d06a2533b650785ea4844ef5a'
+          }
+          PUB = b'''-----BEGIN PUBLIC KEY-----
+          MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAqGzVUQwQ2s/+5kuKvrwg
+          T4Vn8xg0+XFSlx8n+Bp96FJ+X+1Z0iHrNWLEdIpvdFjKGIWYIs5k0K7a8JeUB81Z
+          J6xfPoS+4o2SZTaF/QP6zytHTGmWM7H/4vyzbLiCSTgkXMc40fWf1G9CJqnctocG
+          Ggc2Nha/wkUOZVbVhm6OrzgQ/9J65wpKXMOEP/ORH8JrFCyCZgqyADJlKymNCh+n
+          MC6tHx+4Yappr5VusTxG5xYjQceBoEneE8wZMjLo2WoWKm0mplRCgN6CPkcJoi0x
+          xk1Odjm+ryli/b6YbpypS2GbEDoFoNnbCjeWzmTomB/+9s23xRjDDTdziuqrNg8m
+          rN4FRbheSeS705WTXqyJuNkG+eMmkUR3Ui/4Bl3gEd7J4F6IA1CqcDslFRFiP08A
+          9aL05H+fvH2XL9Ua7VAYHFYLmNJINpis/TpMKe4fyZ+9sspCNbUkO6H8VWFiplvN
+          yECLIwnK/bOAmKtkROtSrCD5mNJQbyeeyFyZ2w71MhvYxYkst9xgxIQPgqu9/TOE
+          qLghXUUF36I6cqRc8lYeVvxJ3CpsSoxUUPJZjT2HlaawyWZ1wOWl4qSqLFeo9vbX
+          cFRWNcQS8biJFSYBwWee4adhi/ah8PT9/RHaiMiPOcpkVhSZnkJD0AYVnGTsx1xV
+          9tx8p5t1RMIgyi4x0Str1oUCAwEAAQ==
           -----END PUBLIC KEY-----'''
 
+          raw = os.environ['SEARCHES_JSON']
+          legacy_key = hashlib.sha256(('cartrack-state-v1\0' + raw).encode()).hexdigest().encode()
+          def old_digest(car_id):
+              return hmac.new(legacy_key, str(car_id).encode(), hashlib.sha256).hexdigest()
+
           config = watcher.load_config()
+          spec = config.searches[1]
           secret = watcher.state_secret()
-          fp = watcher.config_fingerprint(config)
-          state = watcher.load_state(fp, secret)
-          hmac_key = watcher.derive_key(secret, 'cartrack-listing-hmac-v1')
-          session = requests.Session()
-          watcher.bootstrap(session)
+          state = watcher.load_state(watcher.config_fingerprint(config), secret)
+          row = state.get('searches', {}).get(spec.key, {})
+          current_seen = set(row.get('seen', []))
+          current_hmac_key = watcher.derive_key(secret, 'cartrack-listing-hmac-v1')
 
-          out = {'fingerprint': fp, 'searches': []}
-          for idx, spec in enumerate(config.searches, 1):
-              listings = watcher.fetch_search(session, spec)
-              row = state.get('searches', {}).get(spec.key, {})
-              seen = set(row.get('seen', []))
-              entry = {
-                  'index': idx,
-                  'label': spec.label,
-                  'count': len(listings),
-                  'initialized': row.get('initialized'),
-                  'seen_count': len(seen),
-              }
-              if idx == 2:
-                  entry['listings'] = []
-                  for car in listings:
-                      digest = watcher.digest_id(car.get('Id'), hmac_key)
-                      entry['listings'].append({
-                          'Id': car.get('Id'),
-                          'seen': digest in seen,
-                          'Manufacturer': car.get('Manufacturer'),
-                          'Model': car.get('Model'),
-                          'Badge': car.get('Badge'),
-                          'BadgeDetail': car.get('BadgeDetail'),
-                          'FormYear': car.get('FormYear'),
-                          'Year': car.get('Year'),
-                          'Mileage': car.get('Mileage'),
-                          'Price': car.get('Price'),
-                          'ModifiedDate': car.get('ModifiedDate'),
-                          'RegistDate': car.get('RegistDate'),
-                          'FirstDate': car.get('FirstDate'),
-                          'ServiceCopyCar': car.get('ServiceCopyCar'),
-                      })
-              out['searches'].append(entry)
+          session = requests.Session(); watcher.bootstrap(session)
+          listings = watcher.fetch_search(session, spec)
+          old_present = {old_digest(car.get('Id')) for car in listings}
+          missing_old = OLD_SEEN - old_present
+          added = []
+          for pos, car in enumerate(listings, 1):
+              if old_digest(car.get('Id')) not in OLD_SEEN:
+                  added.append({
+                      'pos': pos,
+                      'id': car.get('Id'),
+                      'm': car.get('Manufacturer'),
+                      'model': car.get('Model'),
+                      'badge': car.get('Badge'),
+                      'detail': car.get('BadgeDetail'),
+                      'year': car.get('FormYear') or car.get('Year'),
+                      'km': car.get('Mileage'),
+                      'price10k': car.get('Price'),
+                      'mod': car.get('ModifiedDate'),
+                      'reg': car.get('RegistDate'),
+                      'first': car.get('FirstDate'),
+                      'v4_seen': watcher.digest_id(car.get('Id'), current_hmac_key) in current_seen,
+                  })
 
-          payload = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode()
-          aes_key = os.urandom(32)
-          nonce = os.urandom(12)
-          ciphertext = AESGCM(aes_key).encrypt(nonce, payload, b'cartrack-diagnostic-v2')
-          pub = serialization.load_pem_public_key(public_pem)
-          wrapped = pub.encrypt(aes_key, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-          envelope = {'k': base64.b64encode(wrapped).decode(), 'n': base64.b64encode(nonce).decode(), 'c': base64.b64encode(ciphertext).decode()}
-          with open('.state/diagnostic.enc', 'w', encoding='utf-8') as f:
-              json.dump(envelope, f, separators=(',', ':'))
-              f.write('\n')
+          pub = serialization.load_pem_public_key(PUB)
+          def seal(obj):
+              blob = zlib.compress(json.dumps(obj, ensure_ascii=False, separators=(',', ':')).encode(), 9)
+              if len(blob) > 430:
+                  raise RuntimeError(f'diagnostic item too large: {len(blob)}')
+              enc = pub.encrypt(blob, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+              return base64.b64encode(enc).decode()
+
+          result = {
+              'summary': seal({'current':len(listings),'old':len(OLD_SEEN),'added':len(added),'missing_old':len(missing_old),'v4_initialized':row.get('initialized'),'v4_seen_count':len(current_seen)}),
+              'items': [seal(item) for item in added],
+          }
+          with open('.state/delta.json','w',encoding='utf-8') as f:
+              json.dump(result,f,separators=(',',':')); f.write('\n')
           PY
           cd .state
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add diagnostic.enc
-          git commit -m 'temporary encrypted diagnostic'
+          git add delta.json
+          git commit -m 'temporary encrypted delta diagnostic'
           git push origin HEAD:state
