@@ -1,0 +1,66 @@
+name: Compact Date Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagdatesmall.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnostic:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Extract compact fields
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, json, requests, zlib
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          import watcher
+          PUB=b'''-----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7LSi9roC+Ft3MbqELvGy
+          qkWwWHgc/Qqbrb1W8D4fE5ajMtID2qkFq2muCLtKCZT1aVq9RFNq09clJOcIr1fS
+          i/5QbiUXvBKf+iKUPQE+gIHvHIbWrgKQGSWEclBG2bsrX8jKNNLYz4InOd9WAwUB
+          vF/0wPl94Is7xIr0dNa1D1A71D3pgmo9Xxi6yD1j/lPdu8f6dz/25G/pFExYdcJt
+          YNpxc61WxacDmvdvNMgjU9u4RYZhayP3CSPXLoJqUqoaO/mjGOHEdT4eMC00+Ocg
+          ri/I0Fc720zxpIoHk3A3/Vq63wr9M6CpUzfdu5SDwrz3QsEIYK/WOVTBjY1FpggA
+          8QIDAQAB
+          -----END PUBLIC KEY-----'''
+          config=watcher.load_config(); spec=config.searches[1]
+          s=requests.Session(); watcher.bootstrap(s)
+          car=next(c for c in watcher.fetch_search(s,spec) if str(c.get('Id'))=='41886116')
+          keys=['Id','RegistDate','ModifiedDate','FirstDate','FormYear','Mileage','Price','Manufacturer','Model','Badge','BadgeDetail','ServiceCopyCar']
+          out={k:car.get(k) for k in keys}
+          blob=zlib.compress(json.dumps(out,ensure_ascii=False,separators=(',',':')).encode(),9)
+          pub=serialization.load_pem_public_key(PUB)
+          enc=pub.encrypt(blob,padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          open('.state/date-small.txt','w').write(base64.b64encode(enc).decode()+'\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add date-small.txt
+          git commit -m 'temporary compact date diagnostic'
+          git push origin HEAD:state
