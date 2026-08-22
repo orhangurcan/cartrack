@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -18,16 +19,19 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 API_URL = "https://api.encar.com/search/car/list/general"
 DETAIL_URL = "https://fem.encar.com/cars/detail/{car_id}?listAdvType=share"
-STATE_FILE = Path("state/state.json")
-STATE_VERSION = 3
-CONFIG_FINGERPRINT_VERSION = "cartrack-config-v3"
+STATE_FILE = Path(os.getenv("CARTRACK_STATE_FILE", ".state/state.enc"))
+STATE_VERSION = 4
+CONFIG_FINGERPRINT_VERSION = "cartrack-config-v4"
 DEFAULT_TIMEZONE = "Europe/Berlin"
 PAGE_SIZE = 100
 MAX_PAGES = 20
 RETRY_DELAYS_SECONDS = (5, 10)
+TELEGRAM_MIN_INTERVAL_SECONDS = 1.1
+TELEGRAM_MAX_ATTEMPTS = 4
 LEGACY_PRICE_STEP_10K_KRW = 100
 PRICE_UPPER_RE = re.compile(r"Price\.range\(\.\.(\d+)\)")
 USER_AGENT = (
@@ -98,16 +102,15 @@ def decode_search_url(search_url: str) -> tuple[str, str]:
 
 
 def migrate_v1_action(action: str) -> str:
-    """Apply the one-time compatibility adjustment used by pre-v2 configurations."""
+    """Compatibility adjustment for installations created before format_version 2."""
 
     def replace(match: re.Match[str]) -> str:
-        cap = int(match.group(1)) + LEGACY_PRICE_STEP_10K_KRW
-        return f"Price.range(..{cap})"
+        return f"Price.range(..{int(match.group(1)) + LEGACY_PRICE_STEP_10K_KRW})"
 
     return PRICE_UPPER_RE.sub(replace, action, count=1)
 
 
-def load_config() -> tuple[AppConfig, str]:
+def load_config() -> AppConfig:
     raw = require_env("SEARCHES_JSON")
     try:
         data = json.loads(raw)
@@ -156,11 +159,11 @@ def load_config() -> tuple[AppConfig, str]:
         seen_keys.add(key)
 
         try:
-            minimum = int(row.get("min_expected_results", 1))
+            minimum = int(row.get("min_expected_results", 0))
         except (TypeError, ValueError) as exc:
             raise RuntimeError("min_expected_results must be an integer") from exc
-        if minimum < 1:
-            raise RuntimeError("min_expected_results must be at least 1")
+        if minimum < 0:
+            raise RuntimeError("min_expected_results must be zero or greater")
 
         action, sort = decode_search_url(search_url)
         if format_version == 1:
@@ -176,20 +179,35 @@ def load_config() -> tuple[AppConfig, str]:
             )
         )
 
-    return AppConfig(searches=tuple(searches), timezone=timezone), raw
+    return AppConfig(searches=tuple(searches), timezone=timezone)
 
 
-def derive_state_key(raw_config: str) -> bytes:
-    return hashlib.sha256(("cartrack-state-v2\0" + raw_config).encode("utf-8")).digest()
+def canonical_config(config: AppConfig) -> bytes:
+    rows = [
+        {"key": spec.key, "action": spec.action, "sort": spec.sort}
+        for spec in sorted(config.searches, key=lambda item: item.key)
+    ]
+    return json.dumps(rows, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def config_fingerprint(raw_config: str) -> str:
-    material = f"{CONFIG_FINGERPRINT_VERSION}\0{raw_config}".encode("utf-8")
+def config_fingerprint(config: AppConfig) -> str:
+    material = CONFIG_FINGERPRINT_VERSION.encode("utf-8") + b"\0" + canonical_config(config)
     return hashlib.sha256(material).hexdigest()[:24]
 
 
-def digest_id(car_id: Any, state_key: bytes) -> str:
-    return hmac.new(state_key, str(car_id).encode("utf-8"), hashlib.sha256).hexdigest()
+def state_secret() -> str:
+    explicit = os.getenv("STATE_ENCRYPTION_KEY")
+    if explicit:
+        return explicit
+    return require_env("TELEGRAM_BOT_TOKEN")
+
+
+def derive_key(secret: str, purpose: str) -> bytes:
+    return hmac.new(secret.encode("utf-8"), purpose.encode("utf-8"), hashlib.sha256).digest()
+
+
+def digest_id(car_id: Any, hmac_key: bytes) -> str:
+    return hmac.new(hmac_key, str(car_id).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def default_state(fingerprint: str) -> dict[str, Any]:
@@ -202,19 +220,46 @@ def default_state(fingerprint: str) -> dict[str, Any]:
     }
 
 
-def load_state(fingerprint: str) -> dict[str, Any]:
+def encrypt_state(state: dict[str, Any], secret: str) -> bytes:
+    key = derive_key(secret, "cartrack-state-aesgcm-v1")
+    nonce = os.urandom(12)
+    plaintext = json.dumps(state, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, b"cartrack-state-v4")
+    envelope = {
+        "v": 1,
+        "n": base64.urlsafe_b64encode(nonce).decode("ascii"),
+        "c": base64.urlsafe_b64encode(ciphertext).decode("ascii"),
+    }
+    return (json.dumps(envelope, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+
+
+def decrypt_state(payload: bytes, secret: str) -> dict[str, Any]:
+    try:
+        envelope = json.loads(payload.decode("utf-8"))
+        nonce = base64.urlsafe_b64decode(envelope["n"])
+        ciphertext = base64.urlsafe_b64decode(envelope["c"])
+        key = derive_key(secret, "cartrack-state-aesgcm-v1")
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, b"cartrack-state-v4")
+        state = json.loads(plaintext.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError("Encrypted state cannot be decoded") from exc
+    if not isinstance(state, dict):
+        raise RuntimeError("Encrypted state has invalid content")
+    return state
+
+
+def load_state(fingerprint: str, secret: str) -> dict[str, Any]:
     if not STATE_FILE.exists():
         return default_state(fingerprint)
 
     try:
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        log.warning("State file is unreadable; a fresh baseline will be created")
+        state = decrypt_state(STATE_FILE.read_bytes(), secret)
+    except (OSError, RuntimeError):
+        log.warning("Runtime state is unavailable; a fresh baseline will be created")
         return default_state(fingerprint)
 
     if (
-        not isinstance(state, dict)
-        or state.get("version") != STATE_VERSION
+        state.get("version") != STATE_VERSION
         or state.get("config_fingerprint") != fingerprint
         or not isinstance(state.get("searches"), dict)
     ):
@@ -226,36 +271,23 @@ def load_state(fingerprint: str) -> dict[str, Any]:
     return state
 
 
-def save_state(state: dict[str, Any]) -> None:
+def save_state(state: dict[str, Any], secret: str) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = STATE_FILE.with_suffix(".json.tmp")
-    temp_file.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    temp_file = STATE_FILE.with_suffix(".enc.tmp")
+    temp_file.write_bytes(encrypt_state(state, secret))
     temp_file.replace(STATE_FILE)
 
 
-def state_slot(index: int) -> str:
-    return f"s{index}"
-
-
-def ensure_row(state: dict[str, Any], slot: str) -> dict[str, Any]:
+def ensure_row(state: dict[str, Any], key: str) -> dict[str, Any]:
     return state["searches"].setdefault(
-        slot,
+        key,
         {
             "initialized": False,
             "seen": [],
-            "is_failing": False,
-            "last_error": None,
-            "last_success": None,
-            "last_result_count": None,
+            "fetch_failing": False,
+            "delivery_failing": False,
         },
     )
-
-
-def now_iso(timezone: ZoneInfo) -> str:
-    return datetime.now(timezone).isoformat(timespec="seconds")
 
 
 def bootstrap(session: requests.Session) -> None:
@@ -330,10 +362,10 @@ def fetch_search(session: requests.Session, spec: SearchSpec) -> list[dict[str, 
         if car_id is not None:
             unique[str(car_id)] = item
 
-    if len(unique) < spec.min_expected_results:
-        raise RuntimeError("Search returned a suspiciously low result count; state preserved")
     if total and not unique:
         raise RuntimeError("Search reported results but no usable IDs were parsed")
+    if len(unique) < spec.min_expected_results:
+        raise RuntimeError("Search returned fewer results than configured minimum; state preserved")
     return list(unique.values())
 
 
@@ -341,18 +373,47 @@ def telegram_ready() -> bool:
     return bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
 
+def telegram_retry_after(response: requests.Response) -> float | None:
+    try:
+        payload = response.json()
+        value = payload.get("parameters", {}).get("retry_after")
+        return float(value) if value is not None else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def send_telegram(text: str) -> None:
     token = require_env("TELEGRAM_BOT_TOKEN")
     chat_id = require_env("TELEGRAM_CHAT_ID")
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data={"chat_id": chat_id, "text": text, "disable_web_page_preview": False},
-        timeout=20,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
-        raise RuntimeError("Telegram API did not confirm message delivery")
+    last_error: Exception | None = None
+
+    for attempt in range(TELEGRAM_MAX_ATTEMPTS):
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data={"chat_id": chat_id, "text": text, "disable_web_page_preview": False},
+                timeout=20,
+            )
+            if response.status_code == 429:
+                delay = telegram_retry_after(response) or min(2 ** attempt, 8)
+                last_error = RuntimeError("Telegram rate limited")
+            elif response.status_code >= 500:
+                delay = min(2 ** attempt, 8)
+                last_error = RuntimeError(f"Telegram HTTP {response.status_code}")
+            else:
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict) or payload.get("ok") is not True:
+                    raise RuntimeError("Telegram API did not confirm message delivery")
+                return
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            last_error = exc
+            delay = min(2 ** attempt, 8)
+
+        if attempt < TELEGRAM_MAX_ATTEMPTS - 1:
+            time.sleep(delay)
+
+    raise RuntimeError("Telegram delivery failed") from last_error
 
 
 def safe_notify(text: str) -> bool:
@@ -361,8 +422,8 @@ def safe_notify(text: str) -> bool:
     try:
         send_telegram(text)
         return True
-    except (requests.RequestException, ValueError, RuntimeError) as exc:
-        log.error("Notification failed: %s", type(exc).__name__)
+    except RuntimeError:
+        log.error("Notification failed")
         return False
 
 
@@ -417,10 +478,13 @@ def format_car(label: str, car: dict[str, Any], timezone: ZoneInfo) -> str:
 
 
 def ping_healthcheck(success: bool) -> None:
-    url = os.getenv("HEALTHCHECK_URL")
-    if not url:
+    success_url = os.getenv("HEALTHCHECK_SUCCESS_URL") or os.getenv("HEALTHCHECK_URL")
+    failure_url = os.getenv("HEALTHCHECK_FAILURE_URL")
+    if not failure_url and success_url:
+        failure_url = success_url.rstrip("/") + "/fail"
+    target = success_url if success else failure_url
+    if not target:
         return
-    target = url.rstrip("/") if success else url.rstrip("/") + "/fail"
     try:
         requests.get(target, timeout=15).raise_for_status()
     except requests.RequestException:
@@ -432,14 +496,11 @@ def maybe_startup(
     config: AppConfig,
     counts: list[tuple[str, int]],
     run_failed: bool,
-) -> None:
+) -> bool:
     if run_failed or state.get("startup_notified") or not telegram_ready():
-        return
-    if not all(
-        ensure_row(state, state_slot(index))["initialized"]
-        for index, _ in enumerate(config.searches, start=1)
-    ):
-        return
+        return False
+    if not all(ensure_row(state, spec.key)["initialized"] for spec in config.searches):
+        return False
 
     lines = [
         "✅ Cartrack aktif",
@@ -449,112 +510,127 @@ def maybe_startup(
     lines.append("Tarama: her saat :07 ve :37")
     if safe_notify("\n".join(lines)):
         state["startup_notified"] = True
+        return True
+    return False
 
 
-def maybe_daily(state: dict[str, Any], counts: list[tuple[str, int]], timezone: ZoneInfo) -> None:
+def maybe_daily(state: dict[str, Any], counts: list[tuple[str, int]], timezone: ZoneInfo) -> bool:
     if not telegram_ready():
-        return
+        return False
 
     now = datetime.now(timezone)
     today = now.date().isoformat()
     if now.hour < 19 or state.get("last_daily_summary_date") == today:
-        return
+        return False
 
     lines = ["💚 Cartrack günlük durum", "Sistem aktif."]
     lines.extend(f"{label}: {count} ilan" for label, count in counts)
     if safe_notify("\n".join(lines)):
         state["last_daily_summary_date"] = today
+        return True
+    return False
 
 
 def process_search(
     session: requests.Session,
     state: dict[str, Any],
-    state_key: bytes,
+    hmac_key: bytes,
     spec: SearchSpec,
     index: int,
     timezone: ZoneInfo,
     dry_run: bool,
-) -> tuple[int | None, bool]:
-    slot = state_slot(index)
-    row = ensure_row(state, slot)
+) -> tuple[int | None, bool, bool]:
+    row = ensure_row(state, spec.key)
 
     try:
         listings = fetch_search(session, spec)
     except Exception as exc:
         log.error("Search %d failed: %s", index, type(exc).__name__)
-        if not dry_run:
-            if not row.get("is_failing"):
-                safe_notify(
-                    f"⚠️ Cartrack hata\nFiltre: {spec.label}\nState korunuyor; tekrar denenecek."
-                )
-            row["is_failing"] = True
-            row["last_error"] = type(exc).__name__
-        return None, True
+        changed = False
+        if not dry_run and not row.get("fetch_failing"):
+            safe_notify(f"⚠️ Cartrack hata\nFiltre: {spec.label}\nState korunuyor; tekrar denenecek.")
+            row["fetch_failing"] = True
+            changed = True
+        return None, True, changed
 
     count = len(listings)
     log.info("Search %d OK: %d results", index, count)
     if dry_run:
-        return count, False
+        return count, False, False
 
-    was_failing = bool(row.get("is_failing"))
-    row["is_failing"] = False
-    row["last_error"] = None
-    row["last_success"] = now_iso(timezone)
-    row["last_result_count"] = count
+    changed = False
+    if row.get("fetch_failing"):
+        row["fetch_failing"] = False
+        changed = True
+        safe_notify(f"✅ Cartrack düzeldi\n{spec.label} yeniden okunuyor.")
 
-    current_hashes = {digest_id(car["Id"], state_key) for car in listings}
+    current_hashes = {digest_id(car["Id"], hmac_key) for car in listings}
     old_hashes = set(row.get("seen", []))
 
     if not row.get("initialized"):
         row["seen"] = sorted(current_hashes)
         row["initialized"] = True
+        row["delivery_failing"] = False
+        changed = True
         log.info("Search %d baseline created", index)
-    else:
-        fresh = [car for car in listings if digest_id(car["Id"], state_key) not in old_hashes]
-        log.info("Search %d new=%d", index, len(fresh))
-        delivered_hashes = set(old_hashes)
+        return count, False, changed
 
-        for car in reversed(fresh):
-            car_hash = digest_id(car["Id"], state_key)
-            try:
-                send_telegram(format_car(spec.label, car, timezone))
-            except (requests.RequestException, ValueError, RuntimeError) as exc:
-                log.error("Telegram delivery failed for search %d: %s", index, type(exc).__name__)
-                row["seen"] = sorted(delivered_hashes)
-                return count, True
-            delivered_hashes.add(car_hash)
+    fresh = [car for car in listings if digest_id(car["Id"], hmac_key) not in old_hashes]
+    log.info("Search %d new=%d", index, len(fresh))
+    delivered_hashes = set(old_hashes)
+
+    for car in reversed(fresh):
+        car_hash = digest_id(car["Id"], hmac_key)
+        try:
+            send_telegram(format_car(spec.label, car, timezone))
+        except RuntimeError:
+            log.error("Telegram delivery failed for search %d", index)
+            if not row.get("delivery_failing"):
+                row["delivery_failing"] = True
+                changed = True
             row["seen"] = sorted(delivered_hashes)
-            time.sleep(0.4)
+            return count, True, changed
+        delivered_hashes.add(car_hash)
+        row["seen"] = sorted(delivered_hashes)
+        changed = True
+        time.sleep(TELEGRAM_MIN_INTERVAL_SECONDS)
 
-        row["seen"] = sorted(delivered_hashes | current_hashes)
+    if row.get("delivery_failing"):
+        row["delivery_failing"] = False
+        changed = True
 
-    if was_failing:
-        safe_notify(f"✅ Cartrack düzeldi\n{spec.label} yeniden okunuyor.")
-    return count, False
+    merged = delivered_hashes | current_hashes
+    if merged != old_hashes:
+        row["seen"] = sorted(merged)
+        changed = True
+    return count, False, changed
 
 
 def run_watch(dry_run: bool = False) -> None:
-    config, raw_config = load_config()
-    fingerprint = config_fingerprint(raw_config)
-    state_key = derive_state_key(raw_config)
-    state = load_state(fingerprint)
+    config = load_config()
+    fingerprint = config_fingerprint(config)
+    secret = state_secret()
+    hmac_key = derive_key(secret, "cartrack-listing-hmac-v1")
+    state = load_state(fingerprint, secret)
 
     session = requests.Session()
     bootstrap(session)
 
     run_failed = False
+    state_changed = False
     counts: list[tuple[str, int]] = []
     for index, spec in enumerate(config.searches, start=1):
-        count, failed = process_search(
+        count, failed, changed = process_search(
             session=session,
             state=state,
-            state_key=state_key,
+            hmac_key=hmac_key,
             spec=spec,
             index=index,
             timezone=config.timezone,
             dry_run=dry_run,
         )
         run_failed = run_failed or failed
+        state_changed = state_changed or changed
         if count is not None:
             counts.append((spec.label, count))
 
@@ -563,10 +639,12 @@ def run_watch(dry_run: bool = False) -> None:
             raise RuntimeError("Dry-run failed")
         return
 
-    maybe_startup(state, config, counts, run_failed)
+    state_changed = maybe_startup(state, config, counts, run_failed) or state_changed
     if not run_failed:
-        maybe_daily(state, counts, config.timezone)
-    save_state(state)
+        state_changed = maybe_daily(state, counts, config.timezone) or state_changed
+
+    if state_changed or not STATE_FILE.exists():
+        save_state(state, secret)
     ping_healthcheck(success=not run_failed)
 
     if run_failed:
