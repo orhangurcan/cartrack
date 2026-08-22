@@ -4,12 +4,16 @@ Cartrack monitors private Encar search URLs with GitHub Actions and sends Telegr
 
 ## Design
 
-- Encar search URLs and Telegram credentials stay in GitHub Actions secrets.
-- The first successful watch creates a baseline and does not alert existing matches.
+- Search URLs and Telegram credentials stay in GitHub Actions secrets.
+- The first successful watch creates a baseline; an empty result set is a valid baseline.
 - Later watches notify only previously unseen listing IDs.
-- Persisted listing IDs are stored as keyed hashes, not raw Encar IDs.
-- A changed search configuration automatically creates a fresh baseline.
+- Runtime state is authenticated-encrypted and stored on a dedicated `state` branch, not on `main`.
+- Unchanged checks do not create state commits.
+- Search configuration is fingerprinted semantically, so labels, timezone changes and JSON formatting do not reset listing history.
 - Scheduled checks run at `:07` and `:37` each hour on a GitHub-hosted macOS runner.
 - Pushes run syntax checks and unit tests on Ubuntu.
+- GitHub Actions dependencies are pinned to immutable commit SHAs.
+
+Cartrack uses an unofficial Encar web endpoint and is not affiliated with or endorsed by Encar. The endpoint may change without notice.
 
 For fork installation and configuration, see [FORK_SETUP.md](FORK_SETUP.md).
