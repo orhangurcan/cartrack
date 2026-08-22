@@ -6,6 +6,8 @@ This repository can be forked and configured without committing private Encar se
 
 Fork the repository to your own GitHub account. Open the **Actions** tab in the fork and enable workflows.
 
+For a shared repository, protect `main`: require pull requests, require the `verify` check, block force pushes, and restrict direct pushes. The secret-using `watch` job only runs for scheduled or manually dispatched workflows; pull requests run verification only.
+
 ## 2. Create Encar searches
 
 Build each search normally on Encar and copy the complete Encar search URL from the browser.
@@ -50,7 +52,7 @@ For compatibility, `healthcheckurl` is also accepted; its `/fail` endpoint is us
 
 Never commit secret values. Secrets from the source repository are not copied to forks.
 
-If `statekey` is absent, Cartrack derives state protection from the Telegram bot token so existing installations continue to work. New installations should use a dedicated `statekey`.
+If `statekey` is absent, Cartrack derives state protection from the Telegram bot token so existing installations continue to work. New installations should use a dedicated `statekey`. Adding or changing `statekey` later intentionally creates a fresh encrypted baseline.
 
 ## 4. Start the Telegram bot
 
