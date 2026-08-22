@@ -18,16 +18,16 @@ on:
     branches: [main]
     paths:
       - 'watcher.py'
-      - 'runner.py'
+      - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/cartrack.yml'
 
 concurrency:
-  group: cartrack
+  group: cartrack-${{ github.repository }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -41,13 +41,15 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install --disable-pip-version-check -r requirements.txt
-      - run: python -m py_compile watcher.py runner.py
-      - run: python watcher.py self-test
+      - run: python -m compileall -q watcher.py tests
+      - run: python -m unittest discover -s tests -v
 
   watch:
     if: github.event_name != 'push'
     runs-on: macos-latest
     timeout-minutes: 4
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -55,7 +57,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install --disable-pip-version-check -r requirements.txt
-      - run: python -m py_compile watcher.py runner.py
+      - run: python -m py_compile watcher.py
 
       - name: Run selected mode
         env:
@@ -69,7 +71,7 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             mode="${{ inputs.mode }}"
           fi
-          python runner.py "$mode"
+          python watcher.py "$mode"
 
       - name: Persist opaque state
         if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch'))
@@ -83,4 +85,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- state/state.json
           git commit -m 'chore: update state'
+          git pull --rebase origin main
           git push
