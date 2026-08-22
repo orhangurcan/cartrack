@@ -4,19 +4,20 @@ This repository can be forked and configured without committing private Encar se
 
 ## 1. Fork and enable Actions
 
-Fork this repository to your own GitHub account. Open the **Actions** tab in the fork and enable workflows. GitHub disables scheduled workflows by default on public forks, so this step is required.
+Fork the repository to your own GitHub account. Open the **Actions** tab in the fork and enable workflows.
 
-## 2. Create your Encar searches
+## 2. Create Encar searches
 
-Build each search normally on Encar (model, year, mileage, price, fuel, etc.) and copy the complete Encar search URL from the browser.
+Build each search normally on Encar, including model, year, mileage, price, fuel and any other filters. Copy the complete Encar search URL from the browser.
 
-For new installations, use `format_version: 2`. With version 2 the runner uses the filters contained in each Encar URL as-is. There is no fixed price, mileage, model, or year limit in the public code.
+New installations must use `format_version: 2`. Version 2 uses every filter contained in the Encar URL exactly as provided; the public code does not impose a fixed model, year, mileage or price.
 
-Example with one search:
+Example:
 
 ```json
 {
   "format_version": 2,
+  "timezone": "Europe/Berlin",
   "searches": [
     {
       "key": "search_1",
@@ -28,43 +29,41 @@ Example with one search:
 }
 ```
 
-Add more objects to the `searches` array for additional searches. The runner is not limited to two searches.
+Add more objects to the `searches` array for additional searches. There is no fixed two-search limit.
 
-Optional: a search may include `price_cap_10k_krw` to override only the upper price limit at runtime. Normally this is unnecessary; setting the desired price directly in Encar before copying the URL is simpler.
+`timezone` is optional and defaults to `Europe/Berlin`. Use a valid IANA timezone name if a different local time is preferred for timestamps and the daily status message.
 
 ## 3. Add repository secrets
 
-Go to **Settings → Secrets and variables → Actions → New repository secret** and add:
+Open **Settings → Secrets and variables → Actions → New repository secret** and add:
 
-- `searchesjson` — the complete JSON configuration above
-- `telegrambot` — the Telegram BotFather bot token
+- `searchesjson` — the complete JSON configuration
+- `telegrambot` — the Telegram bot token from BotFather
 - `telegramid` — the numeric Telegram chat/user ID
 - `healthcheckurl` — optional health-check endpoint
 
-Do not commit these values to the repository.
-
-The original repository's secrets are not copied to a fork. Each fork owner must create their own secrets.
+Never commit these values to the repository. Secrets from the source repository are not copied to forks.
 
 ## 4. Start the Telegram bot
 
-Open your own Telegram bot and press **Start** / send `/start` before testing. Telegram bots cannot initiate a private conversation with a user who has never started the bot.
+Open your Telegram bot and press **Start** or send `/start` before testing. Telegram bots cannot initiate a private conversation with a user who has never started the bot.
 
-## 5. Test in this order
+## 5. Test the installation
 
-Open **Actions → Cartrack → Run workflow** and run:
+Open **Actions → Cartrack → Run workflow** and run these modes in order:
 
-1. `telegram-test` — verifies the bot token and chat ID.
-2. `dry-run` — verifies all Encar searches without changing the saved baseline.
-3. `watch` — creates the first baseline and saves opaque state.
+1. `telegram-test` — verifies the Telegram bot token and chat ID.
+2. `dry-run` — verifies every Encar search without changing the saved baseline.
+3. `watch` — creates the initial baseline and saves opaque state.
 
-The first `watch` treats all currently matching listings as the baseline and does **not** alert them as new. Later runs alert only never-before-seen listing IDs.
+The first `watch` treats all current matches as the baseline and does not report them as new. Later runs notify only listing IDs that have never been seen before.
 
 ## 6. Scheduled monitoring
 
 The workflow is scheduled at `:07` and `:37` each hour. GitHub scheduled workflows can start later than the nominal minute when runners are busy.
 
-The saved `state/state.json` contains hashes rather than raw Encar listing IDs. Search URLs and Telegram credentials remain in GitHub Actions secrets.
+`state/state.json` stores keyed hashes rather than raw Encar listing IDs. Search URLs and Telegram credentials remain in GitHub Actions secrets.
 
-## Changing filters later
+## Changing filters
 
-Edit only the `searchesjson` repository secret. When its configuration changes, the runner detects the new fingerprint and creates a fresh baseline on the next `watch`, preventing all existing matches under the changed filter from being reported as newly listed cars.
+Replace the `searchesjson` repository secret with the updated configuration. A configuration fingerprint change creates a fresh baseline on the next `watch`, so existing matches under the new filter are not incorrectly reported as newly listed cars.
