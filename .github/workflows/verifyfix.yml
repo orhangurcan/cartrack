@@ -1,0 +1,84 @@
+name: State Continuity Validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/verifyfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python -m compileall -q watcher.py tests
+      - run: python -m unittest discover -s tests -v
+      - name: Check state before watch
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        run: |
+          python - <<'PY'
+          import os, watcher
+          cfg=watcher.load_config(); secret=watcher.state_secret(); st=watcher.load_state(watcher.config_fingerprint(cfg),secret)
+          row=st['searches'][cfg.searches[1].key]
+          assert row['initialized'] is True
+          assert len(row['seen']) == 29, len(row['seen'])
+          PY
+      - name: Real Encar dry-run
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        run: python watcher.py dry-run
+      - name: Real watch
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        run: python watcher.py watch
+      - name: Check state after watch and mark success
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        run: |
+          python - <<'PY'
+          import json, watcher
+          cfg=watcher.load_config(); secret=watcher.state_secret(); st=watcher.load_state(watcher.config_fingerprint(cfg),secret)
+          row=st['searches'][cfg.searches[1].key]
+          assert row['initialized'] is True
+          assert len(row['seen']) == 29, len(row['seen'])
+          open('.state/fix-ok.json','w').write(json.dumps({'status':'OK'})+'\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state.enc fix-ok.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'record state continuity validation'
+            git push origin HEAD:state
+          fi
