@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -22,14 +22,20 @@ import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 API_URL = "https://api.encar.com/search/car/list/general"
+VEHICLE_DETAIL_API = (
+    "https://api.encar.com/v1/readside/vehicle/{car_id}"
+    "?include=MANAGE,SPEC,CONDITION,ADVERTISEMENT"
+)
 DETAIL_URL = "https://fem.encar.com/cars/detail/{car_id}?listAdvType=share"
 STATE_FILE = Path(os.getenv("CARTRACK_STATE_FILE", ".state/state.enc"))
 STATE_VERSION = 4
 CONFIG_FINGERPRINT_VERSION = "cartrack-config-v4"
 DEFAULT_TIMEZONE = "Europe/Berlin"
+ENCAR_TIMEZONE = ZoneInfo("Asia/Seoul")
 PAGE_SIZE = 100
 MAX_PAGES = 20
 RETRY_DELAYS_SECONDS = (5, 10)
+DETAIL_RETRY_DELAYS_SECONDS = (2, 5)
 TELEGRAM_MIN_INTERVAL_SECONDS = 1.1
 TELEGRAM_MAX_ATTEMPTS = 4
 LEGACY_PRICE_STEP_10K_KRW = 100
@@ -68,6 +74,14 @@ class SearchSpec:
 class AppConfig:
     searches: tuple[SearchSpec, ...]
     timezone: ZoneInfo
+
+
+@dataclass(frozen=True)
+class ListingContext:
+    re_registered: bool | None = None
+    registered_at: datetime | None = None
+    advertised_at: datetime | None = None
+    modified_at: datetime | None = None
 
 
 def require_env(name: str) -> str:
@@ -253,17 +267,19 @@ def load_state(fingerprint: str, secret: str) -> dict[str, Any]:
         return default_state(fingerprint)
 
     try:
-        state = decrypt_state(STATE_FILE.read_bytes(), secret)
-    except (OSError, RuntimeError):
-        log.warning("Runtime state is unavailable; a fresh baseline will be created")
-        return default_state(fingerprint)
+        payload = STATE_FILE.read_bytes()
+    except OSError as exc:
+        raise RuntimeError("Runtime state cannot be read; refusing to reset baseline") from exc
 
-    if (
-        state.get("version") != STATE_VERSION
-        or state.get("config_fingerprint") != fingerprint
-        or not isinstance(state.get("searches"), dict)
-    ):
-        log.info("Configuration or state schema changed; a fresh baseline will be created")
+    state = decrypt_state(payload, secret)
+
+    if state.get("version") != STATE_VERSION:
+        raise RuntimeError("Unsupported runtime state version; refusing to reset baseline")
+    if not isinstance(state.get("searches"), dict):
+        raise RuntimeError("Runtime state is invalid; refusing to reset baseline")
+
+    if state.get("config_fingerprint") != fingerprint:
+        log.info("Search configuration changed; a fresh baseline will be created")
         return default_state(fingerprint)
 
     state.setdefault("startup_notified", False)
@@ -369,6 +385,57 @@ def fetch_search(session: requests.Session, spec: SearchSpec) -> list[dict[str, 
     return list(unique.values())
 
 
+def parse_encar_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ENCAR_TIMEZONE)
+    return parsed
+
+
+def fetch_listing_context(session: requests.Session, car_id: Any) -> ListingContext | None:
+    url = VEHICLE_DETAIL_API.format(car_id=car_id)
+    attempts = len(DETAIL_RETRY_DELAYS_SECONDS) + 1
+
+    for attempt in range(attempts):
+        try:
+            response = session.get(url, headers=API_HEADERS, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise RuntimeError("Vehicle detail API returned invalid JSON")
+            manage = data.get("manage") if isinstance(data.get("manage"), dict) else {}
+            return ListingContext(
+                re_registered=manage.get("reRegistered") if isinstance(manage.get("reRegistered"), bool) else None,
+                registered_at=parse_encar_datetime(manage.get("registDateTime")),
+                advertised_at=parse_encar_datetime(manage.get("firstAdvertisedDateTime")),
+                modified_at=parse_encar_datetime(manage.get("modifyDateTime")),
+            )
+        except (requests.RequestException, ValueError, RuntimeError):
+            if attempt < len(DETAIL_RETRY_DELAYS_SECONDS):
+                time.sleep(DETAIL_RETRY_DELAYS_SECONDS[attempt])
+
+    log.warning("Listing detail lookup failed for a newly matched listing")
+    return None
+
+
+def classify_listing(context: ListingContext | None, now: datetime) -> str:
+    if context is None:
+        return "matched"
+    if context.re_registered is True:
+        return "reregistered"
+    if context.advertised_at is not None:
+        advertised = context.advertised_at.astimezone(now.tzinfo) if now.tzinfo else context.advertised_at
+        if now - timedelta(hours=24) <= advertised <= now + timedelta(minutes=10):
+            return "new"
+        return "matched"
+    return "matched"
+
+
 def telegram_ready() -> bool:
     return bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
@@ -395,10 +462,10 @@ def send_telegram(text: str) -> None:
                 timeout=20,
             )
             if response.status_code == 429:
-                delay = telegram_retry_after(response) or min(2 ** attempt, 8)
+                delay = telegram_retry_after(response) or min(2**attempt, 8)
                 last_error = RuntimeError("Telegram rate limited")
             elif response.status_code >= 500:
-                delay = min(2 ** attempt, 8)
+                delay = min(2**attempt, 8)
                 last_error = RuntimeError(f"Telegram HTTP {response.status_code}")
             else:
                 response.raise_for_status()
@@ -408,7 +475,7 @@ def send_telegram(text: str) -> None:
                 return
         except (requests.RequestException, ValueError, RuntimeError) as exc:
             last_error = exc
-            delay = min(2 ** attempt, 8)
+            delay = min(2**attempt, 8)
 
         if attempt < TELEGRAM_MAX_ATTEMPTS - 1:
             time.sleep(delay)
@@ -435,7 +502,18 @@ def first_value(car: dict[str, Any], *keys: str) -> Any:
     return None
 
 
-def format_car(label: str, car: dict[str, Any], timezone: ZoneInfo) -> str:
+def format_local_datetime(value: datetime | None, timezone: ZoneInfo) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(timezone).strftime("%d.%m.%Y %H:%M")
+
+
+def format_car(
+    label: str,
+    car: dict[str, Any],
+    timezone: ZoneInfo,
+    context: ListingContext | None = None,
+) -> str:
     car_id = str(car["Id"])
     title = " ".join(
         str(value)
@@ -448,7 +526,16 @@ def format_car(label: str, car: dict[str, Any], timezone: ZoneInfo) -> str:
         if value
     ) or label
 
-    lines = ["🚨 YENİ ENCAR İLANI", f"Filtre: {label}", title]
+    now = datetime.now(timezone)
+    classification = classify_listing(context, now)
+    if classification == "reregistered":
+        headline = "♻️ ENCAR'DA YENİDEN İLANA ALINDI"
+    elif classification == "new":
+        headline = "🚨 YENİ ENCAR İLANI"
+    else:
+        headline = "🔔 FİLTREYE YENİ GİREN ENCAR İLANI"
+
+    lines = [headline, f"Filtre: {label}", title]
     year = first_value(car, "FormYear", "Year")
     mileage = first_value(car, "Mileage")
     price = first_value(car, "Price")
@@ -467,11 +554,19 @@ def format_car(label: str, car: dict[str, Any], timezone: ZoneInfo) -> str:
         except (TypeError, ValueError):
             pass
 
+    if context is not None:
+        advertised = format_local_datetime(context.advertised_at, timezone)
+        registered = format_local_datetime(context.registered_at, timezone)
+        if advertised:
+            lines.append(f"Encar yayın zamanı: {advertised}")
+        if context.re_registered is True and registered:
+            lines.append(f"İlk kayıt: {registered}")
+
     lines.extend(
         [
             f"Encar ID: {car_id}",
             DETAIL_URL.format(car_id=car_id),
-            f"İlk görülme: {datetime.now(timezone).strftime('%d.%m.%Y %H:%M')}",
+            f"Sistemde ilk görülme: {now.strftime('%d.%m.%Y %H:%M')}",
         ]
     )
     return "\n".join(lines)
@@ -581,8 +676,9 @@ def process_search(
 
     for car in reversed(fresh):
         car_hash = digest_id(car["Id"], hmac_key)
+        context = fetch_listing_context(session, car["Id"])
         try:
-            send_telegram(format_car(spec.label, car, timezone))
+            send_telegram(format_car(spec.label, car, timezone, context))
         except RuntimeError:
             log.error("Telegram delivery failed for search %d", index)
             if not row.get("delivery_failing"):
