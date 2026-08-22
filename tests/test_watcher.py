@@ -1,6 +1,9 @@
 import json
 import os
+import tempfile
 import unittest
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -113,6 +116,33 @@ class StateTests(unittest.TestCase):
         self.assertEqual(first, watcher.digest_id("12345678", key_a))
         self.assertNotEqual(first, watcher.digest_id("12345678", key_b))
 
+    def test_existing_unreadable_state_refuses_silent_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.enc"
+            state_file.write_text("not encrypted", encoding="utf-8")
+            with patch.object(watcher, "STATE_FILE", state_file):
+                with self.assertRaises(RuntimeError):
+                    watcher.load_state("fp", "secret")
+
+    def test_state_version_mismatch_refuses_silent_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.enc"
+            state = watcher.default_state("fp")
+            state["version"] = watcher.STATE_VERSION - 1
+            state_file.write_bytes(watcher.encrypt_state(state, "secret"))
+            with patch.object(watcher, "STATE_FILE", state_file):
+                with self.assertRaises(RuntimeError):
+                    watcher.load_state("fp", "secret")
+
+    def test_search_config_change_still_creates_intentional_fresh_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.enc"
+            state_file.write_bytes(watcher.encrypt_state(watcher.default_state("old"), "secret"))
+            with patch.object(watcher, "STATE_FILE", state_file):
+                loaded = watcher.load_state("new", "secret")
+            self.assertEqual(loaded["config_fingerprint"], "new")
+            self.assertEqual(loaded["searches"], {})
+
 
 class SearchTests(unittest.TestCase):
     @patch("watcher.api_get")
@@ -125,6 +155,31 @@ class SearchTests(unittest.TestCase):
         api_get.return_value = {"Count": 0, "SearchResults": []}
         with self.assertRaises(RuntimeError):
             watcher.fetch_search(requests.Session(), sample_spec(minimum=1))
+
+
+class ListingContextTests(unittest.TestCase):
+    def test_encar_timestamp_is_interpreted_as_korea_time(self) -> None:
+        value = watcher.parse_encar_datetime("2026-08-23T01:21:50")
+        self.assertIsNotNone(value)
+        self.assertEqual(value.tzinfo, watcher.ENCAR_TIMEZONE)
+        berlin = value.astimezone(ZoneInfo("Europe/Berlin"))
+        self.assertEqual(berlin.strftime("%Y-%m-%d %H:%M:%S"), "2026-08-22 18:21:50")
+
+    def test_reregistered_listing_is_classified_separately(self) -> None:
+        context = watcher.ListingContext(
+            re_registered=True,
+            advertised_at=watcher.parse_encar_datetime("2026-08-23T01:21:50"),
+        )
+        now = datetime(2026, 8, 22, 19, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+        self.assertEqual(watcher.classify_listing(context, now), "reregistered")
+
+    def test_old_listing_entering_filter_is_not_called_new(self) -> None:
+        context = watcher.ListingContext(
+            re_registered=False,
+            advertised_at=watcher.parse_encar_datetime("2026-04-20T11:06:45"),
+        )
+        now = datetime(2026, 8, 22, 19, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+        self.assertEqual(watcher.classify_listing(context, now), "matched")
 
 
 class ProcessingTests(unittest.TestCase):
@@ -145,8 +200,9 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue(state["searches"]["sample"]["initialized"])
         self.assertEqual(state["searches"]["sample"]["seen"], [])
 
+    @patch("watcher.fetch_listing_context", return_value=None)
     @patch("watcher.fetch_search")
-    def test_first_listing_after_empty_baseline_is_notified(self, fetch_search) -> None:
+    def test_first_listing_after_empty_baseline_is_notified(self, fetch_search, fetch_context) -> None:
         fetch_search.return_value = [{"Id": 2001}]
         state = watcher.default_state("fingerprint")
         state["searches"]["sample"] = {
@@ -163,9 +219,11 @@ class ProcessingTests(unittest.TestCase):
         self.assertFalse(failed)
         self.assertTrue(changed)
         send.assert_called_once()
+        fetch_context.assert_called_once_with(unittest.mock.ANY, 2001)
 
+    @patch("watcher.fetch_listing_context", return_value=None)
     @patch("watcher.fetch_search")
-    def test_failed_notification_keeps_listing_unseen_for_retry(self, fetch_search) -> None:
+    def test_failed_notification_keeps_listing_unseen_for_retry(self, fetch_search, fetch_context) -> None:
         fetch_search.return_value = [{"Id": 2001}, {"Id": 2002}]
         old_hash = watcher.digest_id(2001, self.hmac_key)
         state = watcher.default_state("fingerprint")
