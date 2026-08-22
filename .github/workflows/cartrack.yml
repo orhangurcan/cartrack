@@ -21,9 +21,16 @@ on:
       - 'tests/**'
       - 'requirements.txt'
       - '.github/workflows/cartrack.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'watcher.py'
+      - 'tests/**'
+      - 'requirements.txt'
+      - '.github/workflows/cartrack.yml'
 
 concurrency:
-  group: cartrack-${{ github.repository }}
+  group: cartrack-${{ github.repository }}-${{ github.event_name }}
   cancel-in-progress: false
 
 permissions:
@@ -31,7 +38,7 @@ permissions:
 
 jobs:
   verify:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -47,7 +54,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   watch:
-    if: github.event_name != 'push'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
