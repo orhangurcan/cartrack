@@ -1,6 +1,7 @@
 {
-  "last_daily_summary_date": null,
+  "version": 3,
+  "config_fingerprint": null,
   "searches": {},
   "startup_notified": false,
-  "version": 2
+  "last_daily_summary_date": null
 }
