@@ -3,7 +3,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
+
+import requests
 
 import watcher
 
@@ -12,6 +16,16 @@ def make_search_url(action: str, sort: str = "MobileModifiedDate") -> str:
     payload = {"type": "car", "action": action, "sort": sort}
     encoded = quote(json.dumps(payload, separators=(",", ":")))
     return f"https://car.encar.com/list/car?page=1&search={encoded}"
+
+
+def sample_spec() -> watcher.SearchSpec:
+    return watcher.SearchSpec(
+        key="sample",
+        label="Sample",
+        action="(And.Test)",
+        sort="MobileModifiedDate",
+        min_expected_results=1,
+    )
 
 
 class ConfigTests(unittest.TestCase):
@@ -102,6 +116,68 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(state["searches"], {})
         finally:
             watcher.STATE_FILE = original_state_file
+
+
+class ProcessingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.timezone = ZoneInfo("Europe/Berlin")
+        self.state_key = watcher.derive_state_key("test-config")
+
+    @patch("watcher.fetch_search")
+    def test_first_watch_creates_baseline_without_notifications(self, fetch_search) -> None:
+        fetch_search.return_value = [{"Id": 1001}, {"Id": 1002}]
+        state = watcher.default_state("fingerprint")
+
+        with patch("watcher.send_telegram") as send_telegram:
+            count, failed = watcher.process_search(
+                session=requests.Session(),
+                state=state,
+                state_key=self.state_key,
+                spec=sample_spec(),
+                index=1,
+                timezone=self.timezone,
+                dry_run=False,
+            )
+
+        self.assertEqual(count, 2)
+        self.assertFalse(failed)
+        self.assertTrue(state["searches"]["s1"]["initialized"])
+        self.assertEqual(len(state["searches"]["s1"]["seen"]), 2)
+        send_telegram.assert_not_called()
+
+    @patch("watcher.fetch_search")
+    def test_failed_notification_keeps_listing_unseen_for_retry(self, fetch_search) -> None:
+        fetch_search.return_value = [{"Id": 2001}, {"Id": 2002}]
+        state = watcher.default_state("fingerprint")
+        old_hash = watcher.digest_id(2001, self.state_key)
+        state["searches"]["s1"] = {
+            "initialized": True,
+            "seen": [old_hash],
+            "is_failing": False,
+            "last_error": None,
+            "last_success": None,
+            "last_result_count": 1,
+        }
+
+        with patch(
+            "watcher.send_telegram",
+            side_effect=requests.RequestException("delivery failed"),
+        ):
+            count, failed = watcher.process_search(
+                session=requests.Session(),
+                state=state,
+                state_key=self.state_key,
+                spec=sample_spec(),
+                index=1,
+                timezone=self.timezone,
+                dry_run=False,
+            )
+
+        new_hash = watcher.digest_id(2002, self.state_key)
+        self.assertEqual(count, 2)
+        self.assertTrue(failed)
+        self.assertIn(old_hash, state["searches"]["s1"]["seen"])
+        self.assertNotIn(new_hash, state["searches"]["s1"]["seen"])
 
 
 if __name__ == "__main__":
