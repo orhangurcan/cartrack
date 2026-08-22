@@ -1,0 +1,114 @@
+name: Cartrack Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diag320.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnostic:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Build encrypted diagnostic
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, json, os
+          import requests
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          import watcher
+
+          public_pem = b'''-----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqp0UeCMPcbaRShbfHv5a
+          yad7CNHFuJNNrAUQohjiS7vETMTFC37o5Ise19Yjql1nh50Ugnd5AEw5kRFRt6Nm
+          4E0yXTZ96MajZnuDWsuTFxsp2L5YX6ay1Vwc8u8dqpAz9zYFIvl/Vy0s/tX9BfY4
+          lOGqNtkfkDkBeIWDb1QFZW7V2AMtF219o7FlpUbOOgwxsVNu+v2ABNNGgq0lpMZr
+          SETJNdsY7c0TmQj1TVAVXOfrPC4b4S0hKTsEfLcdog6T87E6UkIjqkaXV7i9MsCO
+          watYwg7VjHY81LVQzh+tgUlT9Te9WRs5VbMZYJVFGi7DUzJv5/p8ltP2Arc6L3oC
+          eQIDAQAB
+          -----END PUBLIC KEY-----'''
+
+          config = watcher.load_config()
+          secret = watcher.state_secret()
+          fp = watcher.config_fingerprint(config)
+          state = watcher.load_state(fp, secret)
+          hmac_key = watcher.derive_key(secret, 'cartrack-listing-hmac-v1')
+          session = requests.Session()
+          watcher.bootstrap(session)
+
+          out = {'fingerprint': fp, 'searches': []}
+          for idx, spec in enumerate(config.searches, 1):
+              listings = watcher.fetch_search(session, spec)
+              row = state.get('searches', {}).get(spec.key, {})
+              seen = set(row.get('seen', []))
+              entry = {
+                  'index': idx,
+                  'label': spec.label,
+                  'count': len(listings),
+                  'initialized': row.get('initialized'),
+                  'seen_count': len(seen),
+              }
+              if idx == 2:
+                  entry['listings'] = []
+                  for car in listings:
+                      digest = watcher.digest_id(car.get('Id'), hmac_key)
+                      entry['listings'].append({
+                          'Id': car.get('Id'),
+                          'seen': digest in seen,
+                          'Manufacturer': car.get('Manufacturer'),
+                          'Model': car.get('Model'),
+                          'Badge': car.get('Badge'),
+                          'BadgeDetail': car.get('BadgeDetail'),
+                          'FormYear': car.get('FormYear'),
+                          'Year': car.get('Year'),
+                          'Mileage': car.get('Mileage'),
+                          'Price': car.get('Price'),
+                          'ModifiedDate': car.get('ModifiedDate'),
+                          'RegistDate': car.get('RegistDate'),
+                          'FirstDate': car.get('FirstDate'),
+                          'ServiceCopyCar': car.get('ServiceCopyCar'),
+                      })
+              out['searches'].append(entry)
+
+          payload = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode()
+          aes_key = os.urandom(32)
+          nonce = os.urandom(12)
+          ciphertext = AESGCM(aes_key).encrypt(nonce, payload, b'cartrack-diagnostic-v2')
+          pub = serialization.load_pem_public_key(public_pem)
+          wrapped = pub.encrypt(aes_key, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+          envelope = {'k': base64.b64encode(wrapped).decode(), 'n': base64.b64encode(nonce).decode(), 'c': base64.b64encode(ciphertext).decode()}
+          with open('.state/diagnostic.enc', 'w', encoding='utf-8') as f:
+              json.dump(envelope, f, separators=(',', ':'))
+              f.write('\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add diagnostic.enc
+          git commit -m 'temporary encrypted diagnostic'
+          git push origin HEAD:state
