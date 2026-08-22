@@ -1,0 +1,86 @@
+name: Cartrack
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Run mode
+        required: true
+        default: watch
+        type: choice
+        options:
+          - watch
+          - dry-run
+          - telegram-test
+  push:
+    branches: [main]
+    paths:
+      - 'watcher.py'
+      - 'runner.py'
+      - 'requirements.txt'
+      - '.github/workflows/cartrack.yml'
+
+concurrency:
+  group: cartrack
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python -m py_compile watcher.py runner.py
+      - run: python watcher.py self-test
+
+  watch:
+    if: github.event_name != 'push'
+    runs-on: macos-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - run: python -m py_compile watcher.py runner.py
+
+      - name: Run selected mode
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
+          HEALTHCHECK_URL: ${{ secrets.healthcheckurl }}
+        shell: bash
+        run: |
+          mode="watch"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+          fi
+          python runner.py "$mode"
+
+      - name: Persist opaque state
+        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch'))
+        shell: bash
+        run: |
+          if git diff --quiet -- state/state.json; then
+            echo 'State unchanged.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- state/state.json
+          git commit -m 'chore: update state'
+          git push
