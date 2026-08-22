@@ -33,10 +33,12 @@ jobs:
   verify:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
           cache: pip
@@ -47,12 +49,21 @@ jobs:
   watch:
     if: github.event_name != 'push'
     runs-on: macos-latest
-    timeout-minutes: 4
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Checkout encrypted state
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
           cache: pip
@@ -64,7 +75,11 @@ jobs:
           SEARCHES_JSON: ${{ secrets.searchesjson }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
           TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
           HEALTHCHECK_URL: ${{ secrets.healthcheckurl }}
+          HEALTHCHECK_SUCCESS_URL: ${{ secrets.healthcheck_success_url }}
+          HEALTHCHECK_FAILURE_URL: ${{ secrets.healthcheck_failure_url }}
+          CARTRACK_STATE_FILE: .state/state.enc
         shell: bash
         run: |
           mode="watch"
@@ -73,17 +88,18 @@ jobs:
           fi
           python watcher.py "$mode"
 
-      - name: Persist opaque state
+      - name: Persist encrypted state
         if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch'))
         shell: bash
         run: |
-          if git diff --quiet -- state/state.json; then
-            echo 'State unchanged.'
+          cd .state
+          if [[ -z "$(git status --porcelain -- state.enc)" ]]; then
+            echo 'Encrypted state unchanged.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- state/state.json
-          git commit -m 'chore: update state'
-          git pull --rebase origin main
-          git push
+          git add -- state.enc
+          git commit -m 'update runtime state'
+          git pull --rebase origin state
+          git push origin HEAD:state
