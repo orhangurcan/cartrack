@@ -2,7 +2,7 @@ name: Cartrack
 
 on:
   schedule:
-    - cron: '7,37 * * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
     inputs:
       mode:
