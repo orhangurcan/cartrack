@@ -10,7 +10,7 @@ Cartrack monitors private Encar search URLs with GitHub Actions and sends Telegr
 - Runtime state is authenticated-encrypted and stored on a dedicated `state` branch, not on `main`.
 - Unchanged checks do not create state commits.
 - Search configuration is fingerprinted semantically, so labels, timezone changes and JSON formatting do not reset listing history.
-- Scheduled checks run at `:07` and `:37` each hour on a GitHub-hosted macOS runner.
+- Scheduled checks run every 10 minutes at `:07`, `:17`, `:27`, `:37`, `:47`, and `:57` on a GitHub-hosted macOS runner.
 - Pushes run syntax checks and unit tests on Ubuntu.
 - GitHub Actions dependencies are pinned to immutable commit SHAs.
 
