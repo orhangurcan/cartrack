@@ -1,6 +1,8 @@
 name: Cartrack
 
 on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -18,6 +20,7 @@ on:
       - 'watcher.py'
       - 'tests/**'
       - 'requirements.txt'
+      - 'owner_extra_searches.json'
       - '.github/workflows/cartrack.yml'
   pull_request:
     branches: [main]
@@ -25,6 +28,7 @@ on:
       - 'watcher.py'
       - 'tests/**'
       - 'requirements.txt'
+      - 'owner_extra_searches.json'
       - '.github/workflows/cartrack.yml'
 
 concurrency:
@@ -52,7 +56,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   watch:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
@@ -87,11 +91,29 @@ jobs:
           CARTRACK_STATE_FILE: .state/state.enc
         shell: bash
         run: |
-          mode="${{ inputs.mode }}"
+          set -euo pipefail
+          mode="watch"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+          fi
+
+          if [[ "$mode" != "telegram-test" ]]; then
+            python - <<'PY'
+          import json, os
+          base = json.loads(os.environ['SEARCHES_JSON'])
+          extra = json.load(open('owner_extra_searches.json', encoding='utf-8'))
+          if not isinstance(base.get('searches'), list) or not isinstance(extra.get('searches'), list):
+              raise SystemExit('invalid search configuration')
+          base['searches'] = base['searches'] + extra['searches']
+          open('/tmp/cartrack-searches.json','w',encoding='utf-8').write(json.dumps(base, ensure_ascii=False, separators=(',',':')))
+          PY
+            export SEARCHES_JSON="$(cat /tmp/cartrack-searches.json)"
+          fi
+
           python watcher.py "$mode"
 
       - name: Persist encrypted state
-        if: always() && inputs.mode == 'watch'
+        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch'))
         shell: bash
         run: |
           cd .state
