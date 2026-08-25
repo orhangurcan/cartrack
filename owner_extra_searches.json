@@ -1,5 +1,5 @@
 {
-  "compatibility_note": "These owner-specific URLs use a 14M KRW encoded cap because the existing owner config is legacy format v1; Cartrack's v1 compatibility layer adds 1M KRW at runtime, yielding the requested 15M KRW effective cap.",
+  "compatibility_note": "Owner-specific URLs are stored 1M KRW below their requested price cap because the existing owner config is legacy format v1; Cartrack adds 1M KRW at runtime.",
   "searches": [
     {
       "key": "owner_g30",
@@ -10,6 +10,11 @@
       "key": "owner_w213",
       "label": "Mercedes-Benz E-Class W213",
       "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.%EB%B2%A4%EC%B8%A0._.%28C.ModelGroup.E-%ED%81%B4%EB%9E%98%EC%8A%A4._.%28C.Model.E-%ED%81%B4%EB%9E%98%EC%8A%A4%20W213._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22Mercedes-Benz%20E-Class%20W213%2816~24%EB%85%84%29%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "owner_audi_a6",
+      "label": "Audi A6 2017+",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22(And.Hidden.N._.MultiViewHidden.N._.SellType.일반._.(Or.Separation.B._.Separation.F.)_.ServiceCopyCar.ORIGINAL._.FuelType.디젤._.Mileage.range(..110000)._.(C.CarType.N._.(C.Manufacturer.아우디._.(C.ModelGroup.A6._.Model.뉴%20A6.)))_.Year.range(201700..)._.Price.range(..1300).)%22%2C%22title%22%3A%22Audi%20NEW%20A6(04~18년)%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobilePriceAsc%22%7D"
     }
   ]
 }
