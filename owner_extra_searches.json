@@ -13,8 +13,8 @@
     },
     {
       "key": "owner_audi_a6",
-      "label": "Audi A6 2017+",
-      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22(And.Hidden.N._.MultiViewHidden.N._.SellType.일반._.(Or.Separation.B._.Separation.F.)_.ServiceCopyCar.ORIGINAL._.FuelType.디젤._.Mileage.range(..110000)._.(C.CarType.N._.(C.Manufacturer.아우디._.(C.ModelGroup.A6._.Model.뉴%20A6.)))_.Year.range(201700..)._.Price.range(..1300).)%22%2C%22title%22%3A%22Audi%20NEW%20A6(04~18년)%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobilePriceAsc%22%7D"
+      "label": "Audi A6 2015/05+",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22(And.Hidden.N._.MultiViewHidden.N._.SellType.일반._.(Or.Separation.B._.Separation.F.)_.ServiceCopyCar.ORIGINAL._.FuelType.디젤._.Mileage.range(..110000)._.Price.range(..1300)._.(C.CarType.N._.(C.Manufacturer.아우디._.(C.ModelGroup.A6._.(C.Model.뉴%20A6._.(Or.BadgeGroup.디젤%202WD._.BadgeGroup.디젤%204WD.)))))_.Year.range(201505..).)%22%2C%22title%22%3A%22Audi%20NEW%20A6(04~18년)%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobilePriceAsc%22%7D"
     }
   ]
 }
