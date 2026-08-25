@@ -97,7 +97,7 @@ jobs:
             mode="${{ inputs.mode }}"
           fi
 
-          if [[ "$mode" != "telegram-test" ]]; then
+          if [[ "$mode" != "telegram-test" && "${{ github.repository }}" == "sefaangin/cartrack" ]]; then
             python - <<'PY'
           import json, os
           base = json.loads(os.environ['SEARCHES_JSON'])
