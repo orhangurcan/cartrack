@@ -70,7 +70,7 @@ A zero-result first watch still creates a valid empty baseline, so the first fut
 
 ## 6. Scheduled monitoring
 
-The workflow is scheduled every 10 minutes at `:07`, `:17`, `:27`, `:37`, `:47`, and `:57`. GitHub scheduled workflows can start late during periods of high load and public-repository schedules can be disabled after prolonged repository inactivity. Use an external dead-man healthcheck if missed runs matter.
+The workflow requests checks every 15 minutes at `:07`, `:22`, `:37`, and `:52`. GitHub scheduled workflows can start late or be skipped during periods of high load, and public-repository schedules can be disabled after prolonged repository inactivity. Use an external dead-man healthcheck if missed runs matter.
 
 Runtime state is stored as authenticated encrypted data on the `state` branch. The application branch does not publish result counts, timestamps or listing hashes.
 
