@@ -1,0 +1,66 @@
+name: Check W212 Count
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diag_w212_count.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Count current W212 results
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import watcher
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          extra=json.load(open('owner_extra_searches.json',encoding='utf-8'))
+          base['searches']=base['searches']+extra['searches']
+          os.environ['SEARCHES_JSON']=json.dumps(base,ensure_ascii=False,separators=(',',':'))
+          config=watcher.load_config()
+          spec=next(s for s in config.searches if s.key=='owner_w212')
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+          items=watcher.fetch_search(session,spec)
+          ids=[str(x.get('Id') or x.get('id') or x.get('vehicleId') or '') for x in items]
+          secret=watcher.state_secret()
+          st=watcher.load_state(watcher.config_fingerprint(config),secret)
+          seen=set(st['searches'].get('owner_w212',{}).get('seen',[]))
+          hashes=[watcher.hash_listing_id(x, secret) for x in ids if x]
+          out={
+            'current_count':len(items),
+            'state_seen_count':len(seen),
+            'unseen_current_count':sum(1 for h in hashes if h not in seen),
+            'current_ids':ids
+          }
+          Path('.state/w212-count-report.json').write_text(json.dumps(out,indent=2)+'\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add w212-count-report.json
+          git commit -m 'temporary W212 count report'
+          git push origin HEAD:state
