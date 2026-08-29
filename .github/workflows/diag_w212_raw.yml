@@ -1,0 +1,76 @@
+name: Diagnose W212 Raw Count
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diag_w212_raw.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Compare raw W212 queries
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import watcher
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          extra=json.load(open('owner_extra_searches.json',encoding='utf-8'))
+          base['searches']=base['searches']+extra['searches']
+          os.environ['SEARCHES_JSON']=json.dumps(base,ensure_ascii=False,separators=(',',':'))
+          config=watcher.load_config()
+          spec=next(s for s in config.searches if s.key=='owner_w212')
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+
+          data=watcher.api_get(session,{
+            'count':'true','q':spec.action,'sr':f'|{spec.sort}|0|100'
+          })
+          results=data.get('SearchResults',[])
+          ids=[str(x.get('Id')) for x in results if isinstance(x,dict) and x.get('Id') is not None]
+
+          variants={}
+          variants['configured_runtime']={'Count':data.get('Count'),'results_len':len(results),'unique_ids':len(set(ids)),'ids':ids}
+
+          # Same query but no 2WD/4WD badge-group restriction.
+          q2=spec.action.replace('_.(Or.BadgeGroup.디젤 2WD._.BadgeGroup.디젤 4WD.)','')
+          d2=watcher.api_get(session,{'count':'true','q':q2,'sr':f'|{spec.sort}|0|100'})
+          r2=d2.get('SearchResults',[])
+          i2=[str(x.get('Id')) for x in r2 if isinstance(x,dict) and x.get('Id') is not None]
+          variants['without_badge_group']={'Count':d2.get('Count'),'results_len':len(r2),'unique_ids':len(set(i2)),'ids':i2}
+
+          # Same query but year lower bound 201401 instead of 201400.
+          q3=spec.action.replace('Year.range(201400..)','Year.range(201401..)')
+          d3=watcher.api_get(session,{'count':'true','q':q3,'sr':f'|{spec.sort}|0|100'})
+          r3=d3.get('SearchResults',[])
+          i3=[str(x.get('Id')) for x in r3 if isinstance(x,dict) and x.get('Id') is not None]
+          variants['year_201401']={'Count':d3.get('Count'),'results_len':len(r3),'unique_ids':len(set(i3)),'ids':i3}
+
+          Path('.state/w212-raw-report.json').write_text(json.dumps(variants,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add w212-raw-report.json
+          git commit -m 'temporary W212 raw count report'
+          git push origin HEAD:state
