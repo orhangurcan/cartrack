@@ -21,6 +21,7 @@ on:
       - 'tests/**'
       - 'requirements.txt'
       - 'owner_extra_searches.json'
+      - '.hourly-trigger'
       - '.github/workflows/cartrack.yml'
   pull_request:
     branches: [main]
@@ -32,7 +33,7 @@ on:
       - '.github/workflows/cartrack.yml'
 
 concurrency:
-  group: cartrack-${{ github.repository }}-${{ github.event_name }}
+  group: cartrack-${{ github.repository }}
   cancel-in-progress: false
 
 permissions:
@@ -40,7 +41,7 @@ permissions:
 
 jobs:
   verify:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.event.head_commit.message != 'hourly cartrack trigger')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -56,7 +57,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   watch:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'hourly cartrack trigger')
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
