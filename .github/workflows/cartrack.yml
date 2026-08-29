@@ -1,6 +1,8 @@
 name: Cartrack
 
 on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -55,7 +57,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   watch:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'hourly cartrack trigger')
     runs-on: macos-latest
     timeout-minutes: 10
     permissions:
@@ -112,7 +114,7 @@ jobs:
           python watcher.py "$mode"
 
       - name: Persist encrypted state
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'watch'
+        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch') || (github.event_name == 'push' && github.event.head_commit.message == 'hourly cartrack trigger'))
         shell: bash
         run: |
           cd .state
