@@ -124,3 +124,4 @@ jobs:
           git add recent-listings-report.json
           git commit -m 'temporary recent listings report'
           git push origin HEAD:state
+
