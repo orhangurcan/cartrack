@@ -113,7 +113,7 @@ jobs:
           python watcher.py "$mode"
 
       - name: Persist encrypted state
-        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch'))
+        if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch') || (github.event_name == 'push' && github.event.head_commit.message == 'hourly cartrack trigger'))
         shell: bash
         run: |
           cd .state
