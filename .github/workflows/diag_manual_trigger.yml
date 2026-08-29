@@ -27,7 +27,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, os, urllib.request
-          target='a4d82abd9f4aaa2ea1bebf889494a00651faf274'
+          target='09b094296a5f937bb135e91cbde2afef9ee70b2f'
           url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/workflows/cartrack.yml/runs?event=push&per_page=20"
           req=urllib.request.Request(url,headers={
               'Authorization':'Bearer '+os.environ['GH_TOKEN'],
