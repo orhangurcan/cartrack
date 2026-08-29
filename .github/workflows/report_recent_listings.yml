@@ -1,0 +1,126 @@
+name: Report Recent Encar Listings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/report_recent_listings.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: true
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Build recent listing report
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from datetime import datetime, timezone, timedelta
+          import watcher
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          extra=json.load(open('owner_extra_searches.json',encoding='utf-8'))
+          base['searches']=base['searches']+extra['searches']
+          os.environ['SEARCHES_JSON']=json.dumps(base,ensure_ascii=False,separators=(',',':'))
+
+          config=watcher.load_config()
+          wanted=['bmw_520_f10','bmw_320_f30','owner_audi_a6','owner_w212']
+          # fall back by labels if primary keys differ
+          specs=[]
+          for s in config.searches:
+              if s.key in wanted:
+                  specs.append(s)
+          if len(specs)<4:
+              for s in config.searches:
+                  if s in specs: continue
+                  label=s.label.lower()
+                  if ('f10' in label or 'f30' in label) and s not in specs:
+                      specs.append(s)
+          # unique and keep only target-like filters
+          final=[]
+          seen=set()
+          for s in specs:
+              if s.key in seen: continue
+              if s.key in {'owner_g30','owner_w213'}: continue
+              if s.key in wanted or 'f10' in s.label.lower() or 'f30' in s.label.lower():
+                  final.append(s); seen.add(s.key)
+
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+          now=datetime.now(timezone.utc)
+          report={'generated_at_utc':now.isoformat(),'filters':[]}
+
+          for spec in final:
+              listings=watcher.fetch_search(session,spec)
+              rows=[]
+              for car in listings:
+                  cid=car.get('Id')
+                  ctx=watcher.fetch_listing_context(session,cid)
+                  advertised=ctx.advertised_at.astimezone(timezone.utc) if ctx and ctx.advertised_at else None
+                  registered=ctx.registered_at.astimezone(timezone.utc) if ctx and ctx.registered_at else None
+                  modified=ctx.modified_at.astimezone(timezone.utc) if ctx and ctx.modified_at else None
+                  age_hours=((now-advertised).total_seconds()/3600) if advertised else None
+                  rows.append({
+                    'id':str(cid),
+                    'manufacturer':car.get('Manufacturer'),
+                    'model':car.get('Model'),
+                    'badge':car.get('Badge'),
+                    'badgeDetail':car.get('BadgeDetail'),
+                    'year':car.get('FormYear') or car.get('Year'),
+                    'mileage':car.get('Mileage'),
+                    'price_10k_krw':car.get('Price'),
+                    'firstAdvertisedDateTime_utc':advertised.isoformat() if advertised else None,
+                    'registDateTime_utc':registered.isoformat() if registered else None,
+                    'modifyDateTime_utc':modified.isoformat() if modified else None,
+                    'reRegistered':ctx.re_registered if ctx else None,
+                    'age_hours':round(age_hours,2) if age_hours is not None else None,
+                    'url':watcher.DETAIL_URL.format(car_id=cid),
+                  })
+                  time.sleep(0.08)
+              last24=[x for x in rows if x['age_hours'] is not None and 0 <= x['age_hours'] <= 24]
+              h24_48=[x for x in rows if x['age_hours'] is not None and 24 < x['age_hours'] <= 48]
+              last48=[x for x in rows if x['age_hours'] is not None and 0 <= x['age_hours'] <= 48]
+              unknown=[x for x in rows if x['age_hours'] is None]
+              report['filters'].append({
+                'key':spec.key,'label':spec.label,'current_count':len(rows),
+                'published_last_24h_count':len(last24),
+                'published_24_to_48h_count':len(h24_48),
+                'published_last_48h_count':len(last48),
+                'unknown_publish_time_count':len(unknown),
+                'last24':sorted(last24,key=lambda x:x['firstAdvertisedDateTime_utc'] or '',reverse=True),
+                'h24_48':sorted(h24_48,key=lambda x:x['firstAdvertisedDateTime_utc'] or '',reverse=True),
+              })
+
+          Path('.state/recent-listings-report.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+          PY
+
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add recent-listings-report.json
+          git commit -m 'temporary recent listings report'
+          git push origin HEAD:state
