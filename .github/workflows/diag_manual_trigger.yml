@@ -1,0 +1,58 @@
+name: Verify Hourly Trigger
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diag_manual_trigger.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - name: Find trigger run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          target='a4d82abd9f4aaa2ea1bebf889494a00651faf274'
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/workflows/cartrack.yml/runs?event=push&per_page=20"
+          req=urllib.request.Request(url,headers={
+              'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+              'Accept':'application/vnd.github+json',
+              'User-Agent':'cartrack-trigger-verify'
+          })
+          with urllib.request.urlopen(req,timeout=20) as r:
+              data=json.load(r)
+          hit=None
+          for x in data.get('workflow_runs',[]):
+              if x.get('head_sha') == target:
+                  hit={
+                    'id':x.get('id'),
+                    'head_sha':x.get('head_sha'),
+                    'created_at':x.get('created_at'),
+                    'run_started_at':x.get('run_started_at'),
+                    'status':x.get('status'),
+                    'conclusion':x.get('conclusion')
+                  }
+                  break
+          open('.state/manual-trigger-report.json','w').write(json.dumps(hit,indent=2)+'\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manual-trigger-report.json
+          git commit -m 'temporary manual trigger verification'
+          git push origin HEAD:state
