@@ -1,0 +1,143 @@
+name: Update W212 2014+
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/update_w212_2014.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  migrate:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: true
+      - name: Checkout encrypted state
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Replace W212 filter and verify hourly trigger
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          import watcher
+
+          target_key='owner_w212'
+          replacement={
+            'key':target_key,
+            'label':'Mercedes-Benz E-Class W212 2014+',
+            'search_url':'https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.%EB%B2%A4%EC%B8%A0._.%28C.ModelGroup.E-%ED%81%B4%EB%9E%98%EC%8A%A4._.%28C.Model.E-%ED%81%B4%EB%9E%98%EC%8A%A4%20W212._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Year.range%28201400..%29._.Price.range%28..1200%29.%29%22%2C%22title%22%3A%22Mercedes-Benz%20E-Class%20W212%202014%2B%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D'
+          }
+
+          extra_path=Path('owner_extra_searches.json')
+          extra=json.loads(extra_path.read_text(encoding='utf-8'))
+          rows=extra.get('searches',[])
+          if sum(1 for x in rows if x.get('key')==target_key)!=1:
+              raise SystemExit('expected exactly one W212 search')
+          new_rows=[replacement if x.get('key')==target_key else x for x in rows]
+          new_extra=dict(extra); new_extra['searches']=new_rows
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          merged=dict(base); merged['searches']=list(base['searches'])+new_rows
+          os.environ['SEARCHES_JSON']=json.dumps(merged,ensure_ascii=False,separators=(',',':'))
+
+          secret=watcher.state_secret()
+          old_state=watcher.decrypt_state(watcher.STATE_FILE.read_bytes(),secret)
+          preserved={k:set(v.get('seen',[])) for k,v in old_state.get('searches',{}).items() if k!=target_key and isinstance(v,dict)}
+          if len(preserved)<5:
+              raise SystemExit(f'expected five non-W212 histories, got {len(preserved)}')
+
+          config=watcher.load_config()
+          if len(config.searches)!=6:
+              raise SystemExit(f'expected 6 searches, got {len(config.searches)}')
+
+          old_state['config_fingerprint']=watcher.config_fingerprint(config)
+          old_state['searches'].pop(target_key,None)
+          watcher.save_state(old_state,secret)
+
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+          spec=next(s for s in config.searches if s.key==target_key)
+          current=watcher.fetch_search(session,spec)
+          watcher.run_watch(dry_run=False)
+
+          new_state=watcher.load_state(watcher.config_fingerprint(config),secret)
+          for key,hashes in preserved.items():
+              if not hashes.issubset(set(new_state['searches'].get(key,{}).get('seen',[]))):
+                  raise SystemExit(f'history lost for {key}')
+          row=new_state['searches'].get(target_key,{})
+          if row.get('initialized') is not True:
+              raise SystemExit('W212 not initialized')
+
+          # Verify first hourly fallback trigger commit actually ran successfully.
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/runs?event=push&per_page=100"
+          req=urllib.request.Request(url,headers={
+              'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+              'Accept':'application/vnd.github+json',
+              'User-Agent':'cartrack-hourly-verify'
+          })
+          with urllib.request.urlopen(req,timeout=20) as resp:
+              data=json.load(resp)
+          hourly=None
+          for run in data.get('workflow_runs',[]):
+              if run.get('head_sha')=='a4d82abd9f4aaa2ea1bebf889494a00651faf274':
+                  hourly={
+                      'run_id':run.get('id'),
+                      'status':run.get('status'),
+                      'conclusion':run.get('conclusion'),
+                      'created_at':run.get('created_at'),
+                      'run_started_at':run.get('run_started_at')
+                  }
+                  break
+
+          report={
+              'status':'OK',
+              'w212_current_results':len(current),
+              'w212_seen_count':len(row.get('seen',[])),
+              'total_searches':len(config.searches),
+              'other_histories_preserved':True,
+              'first_hourly_trigger_run':hourly
+          }
+          Path('.state/w212-2014-report.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+          extra_path.write_text(json.dumps(new_extra,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add owner_extra_searches.json
+          git commit -m 'set W212 monitoring to 2014 plus'
+          git push origin HEAD:main
+
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state.enc w212-2014-report.json
+          git commit -m 'initialize W212 2014 plus state'
+          git pull --rebase origin state
+          git push origin HEAD:state
