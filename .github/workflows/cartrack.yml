@@ -22,6 +22,7 @@ on:
       - 'requirements.txt'
       - 'owner_extra_searches.json'
       - '.hourly-trigger'
+      - '.recent-report-trigger'
       - '.github/workflows/cartrack.yml'
   pull_request:
     branches: [main]
@@ -127,4 +128,100 @@ jobs:
           git add -- state.enc
           git commit -m 'update runtime state'
           git pull --rebase origin state
+          git push origin HEAD:state
+
+
+  recent_report:
+    if: github.event_name == 'push' && github.event.head_commit.message == 'recent listing report trigger'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Checkout encrypted state
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Build recent listing report
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import watcher
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          extra=json.load(open('owner_extra_searches.json',encoding='utf-8'))
+          base['searches']=base['searches']+extra['searches']
+          os.environ['SEARCHES_JSON']=json.dumps(base,ensure_ascii=False,separators=(',',':'))
+          config=watcher.load_config()
+
+          wanted=[]
+          for s in config.searches:
+              l=s.label.lower()
+              if s.key in {'owner_g30','owner_w213'}:
+                  continue
+              if ('f10' in l or 'f30' in l or s.key in {'owner_audi_a6','owner_w212'}):
+                  wanted.append(s)
+
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+          now=datetime.now(timezone.utc)
+          report={'generated_at_utc':now.isoformat(),'filters':[]}
+
+          for spec in wanted:
+              listings=watcher.fetch_search(session,spec)
+              rows=[]
+              for car in listings:
+                  cid=car.get('Id')
+                  ctx=watcher.fetch_listing_context(session,cid)
+                  adv=ctx.advertised_at.astimezone(timezone.utc) if ctx and ctx.advertised_at else None
+                  age=((now-adv).total_seconds()/3600) if adv else None
+                  rows.append({
+                    'id':str(cid),
+                    'title':' '.join(str(x) for x in [car.get('Manufacturer'),car.get('Model'),car.get('Badge'),car.get('BadgeDetail')] if x),
+                    'year':car.get('FormYear') or car.get('Year'),
+                    'mileage':car.get('Mileage'),
+                    'price_10k_krw':car.get('Price'),
+                    'firstAdvertisedDateTime_utc':adv.isoformat() if adv else None,
+                    'reRegistered':ctx.re_registered if ctx else None,
+                    'age_hours':round(age,2) if age is not None else None,
+                    'url':watcher.DETAIL_URL.format(car_id=cid),
+                  })
+                  time.sleep(0.05)
+              last24=[x for x in rows if x['age_hours'] is not None and 0 <= x['age_hours'] <= 24]
+              h24_48=[x for x in rows if x['age_hours'] is not None and 24 < x['age_hours'] <= 48]
+              report['filters'].append({
+                'key':spec.key,'label':spec.label,'current_count':len(rows),
+                'published_last_24h_count':len(last24),
+                'published_24_to_48h_count':len(h24_48),
+                'published_last_48h_count':len(last24)+len(h24_48),
+                'last24':sorted(last24,key=lambda x:x['firstAdvertisedDateTime_utc'] or '',reverse=True),
+                'h24_48':sorted(h24_48,key=lambda x:x['firstAdvertisedDateTime_utc'] or '',reverse=True)
+              })
+
+          Path('.state/recent-listings-report.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add recent-listings-report.json
+          git commit -m 'temporary recent listings report'
           git push origin HEAD:state
