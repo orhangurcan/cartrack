@@ -1,0 +1,62 @@
+name: Check Manual Cartrack Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diag_manual_run.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - name: Locate manual Cartrack run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, time
+          target='eea3e20a9cd122286c16a66eb79253b70540b9b0'
+          found=None
+          for _ in range(12):
+              url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/runs?event=push&per_page=100"
+              req=urllib.request.Request(url,headers={
+                  'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                  'Accept':'application/vnd.github+json',
+                  'User-Agent':'cartrack-manual-check'
+              })
+              with urllib.request.urlopen(req,timeout=20) as r:
+                  data=json.load(r)
+              for x in data.get('workflow_runs',[]):
+                  if x.get('head_sha')==target and x.get('name')=='Cartrack':
+                      found={
+                          'id':x.get('id'),
+                          'status':x.get('status'),
+                          'conclusion':x.get('conclusion'),
+                          'created_at':x.get('created_at'),
+                          'run_started_at':x.get('run_started_at'),
+                          'head_sha':x.get('head_sha')
+                      }
+                      break
+              if found and found.get('status')=='completed':
+                  break
+              time.sleep(5)
+          open('.state/manual-run-report.json','w').write(json.dumps(found,indent=2)+'\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manual-run-report.json
+          git commit -m 'temporary manual run report'
+          git push origin HEAD:state
