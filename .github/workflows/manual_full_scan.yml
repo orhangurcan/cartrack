@@ -1,0 +1,123 @@
+name: Manual Full Cartrack Scan
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/manual_full_scan.yml'
+
+concurrency:
+  group: cartrack-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Checkout encrypted state
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Scan, compare and run watch
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          HEALTHCHECK_URL: ${{ secrets.healthcheckurl }}
+          HEALTHCHECK_SUCCESS_URL: ${{ secrets.healthcheck_success_url }}
+          HEALTHCHECK_FAILURE_URL: ${{ secrets.healthcheck_failure_url }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import watcher
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          extra=json.load(open('owner_extra_searches.json',encoding='utf-8'))
+          base['searches']=base['searches']+extra['searches']
+          os.environ['SEARCHES_JSON']=json.dumps(base,ensure_ascii=False,separators=(',',':'))
+
+          config=watcher.load_config()
+          fingerprint=watcher.config_fingerprint(config)
+          secret=watcher.state_secret()
+          hmac_key=watcher.derive_key(secret,'cartrack-listing-hmac-v1')
+          state=watcher.load_state(fingerprint,secret)
+
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+
+          report={'status':'OK','searches':[],'total_new':0}
+          for spec in config.searches:
+              listings=watcher.fetch_search(session,spec)
+              row=watcher.ensure_row(state,spec.key)
+              old=set(row.get('seen',[]))
+              fresh=[]
+              if row.get('initialized'):
+                  fresh=[car for car in listings if watcher.digest_id(car['Id'],hmac_key) not in old]
+              item={
+                  'key':spec.key,
+                  'label':spec.label,
+                  'count':len(listings),
+                  'initialized':bool(row.get('initialized')),
+                  'new_count':len(fresh),
+                  'new':[]
+              }
+              for car in fresh:
+                  ctx=watcher.fetch_listing_context(session,car['Id'])
+                  item['new'].append({
+                      'id':str(car.get('Id')),
+                      'manufacturer':car.get('Manufacturer'),
+                      'model':car.get('Model'),
+                      'badge':car.get('Badge'),
+                      'badge_detail':car.get('BadgeDetail'),
+                      'year':car.get('FormYear') or car.get('Year'),
+                      'mileage':car.get('Mileage'),
+                      'price_10k_krw':car.get('Price'),
+                      're_registered': None if ctx is None else ctx.re_registered,
+                      'advertised_at': None if ctx is None or ctx.advertised_at is None else ctx.advertised_at.isoformat(),
+                      'modified_at': None if ctx is None or ctx.modified_at is None else ctx.modified_at.isoformat(),
+                  })
+              report['searches'].append(item)
+              report['total_new']+=len(fresh)
+
+          Path('.state/manual-scan-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+
+          # Production-equivalent watch: sends Telegram for genuinely unseen IDs and updates encrypted state.
+          watcher.run_watch(dry_run=False)
+          PY
+
+      - name: Persist state and report
+        if: always()
+        shell: bash
+        run: |
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state.enc manual-scan-report.json
+          if git diff --cached --quiet; then
+            echo 'Nothing to persist.'
+            exit 0
+          fi
+          git commit -m 'manual Cartrack scan result'
+          git pull --rebase origin state
+          git push origin HEAD:state
