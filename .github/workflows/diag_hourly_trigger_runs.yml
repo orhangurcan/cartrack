@@ -1,0 +1,64 @@
+name: Check Hourly Trigger Runs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diag_hourly_trigger_runs.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - name: Check trigger commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          targets={
+            'first':'a4d82abd9f4aaa2ea1bebf889494a00651faf274',
+            'after_fix':'09b094296a5f937bb135e91cbde2afef9ee70b2f'
+          }
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/actions/runs?event=push&per_page=100"
+          req=urllib.request.Request(url,headers={
+            'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+            'Accept':'application/vnd.github+json',
+            'User-Agent':'cartrack-hourly-diag'
+          })
+          with urllib.request.urlopen(req,timeout=20) as resp:
+            data=json.load(resp)
+          out={}
+          for name,sha in targets.items():
+            matches=[]
+            for run in data.get('workflow_runs',[]):
+              if run.get('head_sha')==sha:
+                matches.append({
+                  'id':run.get('id'),
+                  'name':run.get('name'),
+                  'status':run.get('status'),
+                  'conclusion':run.get('conclusion'),
+                  'created_at':run.get('created_at'),
+                  'run_started_at':run.get('run_started_at'),
+                  'event':run.get('event')
+                })
+            out[name]={'sha':sha,'runs':matches}
+          open('.state/hourly-trigger-runs.json','w').write(json.dumps(out,indent=2)+'\n')
+          PY
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add hourly-trigger-runs.json
+          git commit -m 'temporary hourly trigger run report'
+          git push origin HEAD:state
