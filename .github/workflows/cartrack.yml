@@ -20,6 +20,7 @@ on:
       - 'requirements.txt'
       - 'owner_extra_searches.json'
       - '.hourly-trigger'
+      - '.migrate-130k-trigger'
       - '.github/workflows/cartrack.yml'
   pull_request:
     branches: [main]
@@ -141,5 +142,145 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- state.enc
           git commit -m 'update runtime state'
+          git pull --rebase origin state
+          git push origin HEAD:state
+
+
+  migrate_130k:
+    if: github.event_name == 'push' && github.event.head_commit.message == 'migrate 130k trigger'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: true
+      - name: Checkout encrypted state
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: state
+          path: .state
+          persist-credentials: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Migrate and report
+        env:
+          SEARCHES_JSON: ${{ secrets.searchesjson }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
+          STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
+          CARTRACK_STATE_FILE: .state/state.enc
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, re, time
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import watcher
+
+          MILEAGE_RE=re.compile(r'Mileage\.range\(\.\.\d+\)')
+          def force130(url):
+              return MILEAGE_RE.sub('Mileage.range(..130000)', url)
+          def norm(rows):
+              out=[]
+              for x in rows:
+                  y=dict(x)
+                  y['search_url']=force130(y['search_url'])
+                  out.append(y)
+              return out
+
+          extra_path=Path('owner_extra_searches.json')
+          extra=json.loads(extra_path.read_text(encoding='utf-8'))
+          extra['searches']=norm(extra['searches'])
+
+          base=json.loads(os.environ['SEARCHES_JSON'])
+          merged=dict(base)
+          merged['searches']=norm(base['searches'])+extra['searches']
+          os.environ['SEARCHES_JSON']=json.dumps(merged,ensure_ascii=False,separators=(',',':'))
+
+          config=watcher.load_config()
+          if len(config.searches)!=6:
+              raise SystemExit(f'expected 6 searches, got {len(config.searches)}')
+          bad=[s.key for s in config.searches if 'Mileage.range(..130000)' not in s.action]
+          if bad:
+              raise SystemExit(f'130k missing for {bad}')
+
+          secret=watcher.state_secret()
+          state=watcher.decrypt_state(watcher.STATE_FILE.read_bytes(),secret)
+          old_seen={k:set(v.get('seen',[])) for k,v in state.get('searches',{}).items() if isinstance(v,dict)}
+          state['config_fingerprint']=watcher.config_fingerprint(config)
+
+          session=watcher.requests.Session()
+          watcher.bootstrap(session)
+          hmac_key=watcher.derive_key(secret,'cartrack-listing-hmac-v1')
+          now=datetime.now(timezone.utc)
+          report={'generated_at_utc':now.isoformat(),'window_days':30,'filters':[]}
+          counts={}
+
+          for spec in config.searches:
+              listings=watcher.fetch_search(session,spec)
+              counts[spec.key]=len(listings)
+              row=state['searches'].setdefault(spec.key,{
+                  'initialized':True,'seen':[],'fetch_failing':False,'delivery_failing':False
+              })
+              current={watcher.digest_id(car['Id'],hmac_key) for car in listings}
+              row['seen']=sorted(set(row.get('seen',[]))|current)
+              row['initialized']=True
+              row['fetch_failing']=False
+
+              recent=[]
+              for car in listings:
+                  cid=car.get('Id')
+                  ctx=watcher.fetch_listing_context(session,cid)
+                  adv=ctx.advertised_at.astimezone(timezone.utc) if ctx and ctx.advertised_at else None
+                  if adv:
+                      age=(now-adv).total_seconds()/3600
+                      if 0 <= age <= 720:
+                          recent.append({
+                              'id':str(cid),
+                              'title':' '.join(str(v) for v in [car.get('Manufacturer'),car.get('Model'),car.get('Badge'),car.get('BadgeDetail')] if v),
+                              'year':car.get('FormYear') or car.get('Year'),
+                              'mileage':car.get('Mileage'),
+                              'price_10k_krw':car.get('Price'),
+                              'firstAdvertisedDateTime_utc':adv.isoformat(),
+                              'reRegistered':ctx.re_registered if ctx else None,
+                              'url':watcher.DETAIL_URL.format(car_id=cid)
+                          })
+                  time.sleep(0.03)
+              recent.sort(key=lambda x:x['firstAdvertisedDateTime_utc'],reverse=True)
+              report['filters'].append({
+                  'key':spec.key,'label':spec.label,'current_count':len(listings),
+                  'last_30d_count':len(recent),'rows':recent
+              })
+
+          for key,hs in old_seen.items():
+              if not hs.issubset(set(state['searches'].get(key,{}).get('seen',[]))):
+                  raise SystemExit(f'history lost for {key}')
+
+          watcher.save_state(state,secret)
+          extra_path.write_text(json.dumps(extra,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          Path('.state/monthly-130k-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          Path('.state/migration-130k-report.json').write_text(json.dumps({
+              'status':'OK','total_searches':6,'all_effective_mileage_caps_km':130000,
+              'current_counts':counts,'old_histories_preserved':True
+          },ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add owner_extra_searches.json
+          git commit -m 'set owner searches to 130k km'
+          git push origin HEAD:main
+
+          cd .state
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state.enc monthly-130k-report.json migration-130k-report.json
+          git commit -m 'migrate 130k baseline and monthly report'
           git pull --rebase origin state
           git push origin HEAD:state
