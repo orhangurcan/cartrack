@@ -40,6 +40,7 @@ TELEGRAM_MIN_INTERVAL_SECONDS = 1.1
 TELEGRAM_MAX_ATTEMPTS = 4
 LEGACY_PRICE_STEP_10K_KRW = 100
 PRICE_UPPER_RE = re.compile(r"Price\.range\(\.\.(\d+)\)")
+MILEAGE_UPPER_RE = re.compile(r"Mileage\.range\(\.\.\d+\)")
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
@@ -183,6 +184,16 @@ def load_config() -> AppConfig:
         if format_version == 1:
             action = migrate_v1_action(action)
 
+        forced_mileage = os.getenv("CARTRACK_MAX_MILEAGE_KM")
+        if forced_mileage:
+            try:
+                forced_mileage_int = int(forced_mileage)
+            except ValueError as exc:
+                raise RuntimeError("CARTRACK_MAX_MILEAGE_KM must be an integer") from exc
+            if forced_mileage_int <= 0:
+                raise RuntimeError("CARTRACK_MAX_MILEAGE_KM must be positive")
+            action = MILEAGE_UPPER_RE.sub(f"Mileage.range(..{forced_mileage_int})", action, count=1)
+
         searches.append(
             SearchSpec(
                 key=key,
@@ -279,8 +290,12 @@ def load_state(fingerprint: str, secret: str) -> dict[str, Any]:
         raise RuntimeError("Runtime state is invalid; refusing to reset baseline")
 
     if state.get("config_fingerprint") != fingerprint:
-        log.info("Search configuration changed; a fresh baseline will be created")
-        return default_state(fingerprint)
+        log.info("Search configuration changed; preserving history and refreshing baseline")
+        state["config_fingerprint"] = fingerprint
+        for row in state["searches"].values():
+            if isinstance(row, dict):
+                row["initialized"] = False
+        return state
 
     state.setdefault("startup_notified", False)
     state.setdefault("last_daily_summary_date", None)
@@ -663,7 +678,7 @@ def process_search(
     old_hashes = set(row.get("seen", []))
 
     if not row.get("initialized"):
-        row["seen"] = sorted(current_hashes)
+        row["seen"] = sorted(old_hashes | current_hashes)
         row["initialized"] = True
         row["delivery_failing"] = False
         changed = True
