@@ -184,7 +184,7 @@ def load_config() -> AppConfig:
         if format_version == 1:
             action = migrate_v1_action(action)
 
-        forced_mileage = os.getenv("CARTRACK_MAX_MILEAGE_KM")
+        forced_mileage = os.getenv("CARTRACK_MAX_MILEAGE_KM", "130000")
         if forced_mileage:
             try:
                 forced_mileage_int = int(forced_mileage)
