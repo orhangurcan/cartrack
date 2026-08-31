@@ -111,7 +111,24 @@ jobs:
             export SEARCHES_JSON="$(cat /tmp/cartrack-searches.json)"
           fi
 
-          python watcher.py "$mode"
+          if [[ "$mode" == "watch" ]]; then
+            python - <<'PY'
+          import logging
+          import watcher
+
+          original_send_telegram = watcher.send_telegram
+          logger = logging.getLogger("cartrack")
+
+          def logged_send_telegram(text: str) -> None:
+              logger.info("CARTRACK_NOTIFICATION_BEGIN\n%s\nCARTRACK_NOTIFICATION_END", text)
+              original_send_telegram(text)
+
+          watcher.send_telegram = logged_send_telegram
+          watcher.run_watch(dry_run=False)
+          PY
+          else
+            python watcher.py "$mode"
+          fi
 
       - name: Persist encrypted state
         if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'watch') || (github.event_name == 'push' && github.event.head_commit.message == 'hourly cartrack trigger'))
