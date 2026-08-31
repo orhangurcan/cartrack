@@ -99,18 +99,108 @@ jobs:
 
           if [[ "$mode" != "telegram-test" && "${{ github.repository }}" == "sefaangin/cartrack" ]]; then
             python - <<'PY'
-          import json, os
+          import json, os, re
           base = json.loads(os.environ['SEARCHES_JSON'])
           extra = json.load(open('owner_extra_searches.json', encoding='utf-8'))
           if not isinstance(base.get('searches'), list) or not isinstance(extra.get('searches'), list):
               raise SystemExit('invalid search configuration')
-          base['searches'] = base['searches'] + extra['searches']
+          mileage_re = re.compile(r'Mileage\\.range\\(\\.\\.\\d+\\)')
+          rows = base['searches'] + extra['searches']
+          for row in rows:
+              row['search_url'] = mileage_re.sub('Mileage.range(..130000)', row['search_url'])
+          base['searches'] = rows
           open('/tmp/cartrack-searches.json','w',encoding='utf-8').write(json.dumps(base, ensure_ascii=False, separators=(',',':')))
           PY
             export SEARCHES_JSON="$(cat /tmp/cartrack-searches.json)"
           fi
 
-          if [[ "$mode" == "watch" ]]; then
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.event.head_commit.message }}" == "hourly cartrack trigger" && -f ".migrate-130k-trigger" ]]; then
+            python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from datetime import datetime, timezone
+          import watcher
+
+          config = watcher.load_config()
+          if len(config.searches) != 6:
+              raise SystemExit(f'expected 6 searches, got {len(config.searches)}')
+          bad = [s.key for s in config.searches if 'Mileage.range(..130000)' not in s.action]
+          if bad:
+              raise SystemExit(f'130k missing for {bad}')
+
+          secret = watcher.state_secret()
+          state = watcher.decrypt_state(watcher.STATE_FILE.read_bytes(), secret)
+          old_seen = {k:set(v.get('seen',[])) for k,v in state.get('searches',{}).items() if isinstance(v,dict)}
+          state['config_fingerprint'] = watcher.config_fingerprint(config)
+
+          session = watcher.requests.Session()
+          watcher.bootstrap(session)
+          hmac_key = watcher.derive_key(secret, 'cartrack-listing-hmac-v1')
+          now = datetime.now(timezone.utc)
+          report = {'generated_at_utc':now.isoformat(),'window_days':30,'filters':[]}
+          counts = {}
+
+          for spec in config.searches:
+              listings = watcher.fetch_search(session, spec)
+              counts[spec.key] = len(listings)
+              row = state['searches'].setdefault(spec.key, {
+                  'initialized':True,'seen':[],'fetch_failing':False,'delivery_failing':False
+              })
+              current = {watcher.digest_id(car['Id'], hmac_key) for car in listings}
+              row['seen'] = sorted(set(row.get('seen',[])) | current)
+              row['initialized'] = True
+              row['fetch_failing'] = False
+
+              recent = []
+              for car in listings:
+                  cid = car.get('Id')
+                  ctx = watcher.fetch_listing_context(session, cid)
+                  adv = ctx.advertised_at.astimezone(timezone.utc) if ctx and ctx.advertised_at else None
+                  if adv:
+                      age_h = (now - adv).total_seconds() / 3600
+                      if 0 <= age_h <= 720:
+                          recent.append({
+                              'id': str(cid),
+                              'title': ' '.join(str(v) for v in [
+                                  car.get('Manufacturer'), car.get('Model'), car.get('Badge'), car.get('BadgeDetail')
+                              ] if v),
+                              'year': car.get('FormYear') or car.get('Year'),
+                              'mileage': car.get('Mileage'),
+                              'price_10k_krw': car.get('Price'),
+                              'firstAdvertisedDateTime_utc': adv.isoformat(),
+                              'reRegistered': ctx.re_registered if ctx else None,
+                              'url': watcher.DETAIL_URL.format(car_id=cid)
+                          })
+                  time.sleep(0.03)
+              recent.sort(key=lambda x: x['firstAdvertisedDateTime_utc'], reverse=True)
+              report['filters'].append({
+                  'key': spec.key,
+                  'label': spec.label,
+                  'current_count': len(listings),
+                  'last_30d_count': len(recent),
+                  'rows': recent
+              })
+
+          for key, hashes in old_seen.items():
+              if not hashes.issubset(set(state['searches'].get(key,{}).get('seen',[]))):
+                  raise SystemExit(f'history lost for {key}')
+
+          watcher.save_state(state, secret)
+          Path('.state/monthly-130k-report.json').write_text(
+              json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          Path('.state/migration-130k-report.json').write_text(
+              json.dumps({
+                  'status':'OK',
+                  'total_searches':6,
+                  'all_effective_mileage_caps_km':130000,
+                  'current_counts':counts,
+                  'old_histories_preserved':True
+              }, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8'
+          )
+          PY
+          elif [[ "$mode" == "watch" ]]; then
             python - <<'PY'
           import logging
           import watcher
@@ -141,6 +231,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- state.enc
+          if [[ -f monthly-130k-report.json ]]; then git add monthly-130k-report.json; fi
+          if [[ -f migration-130k-report.json ]]; then git add migration-130k-report.json; fi
           git commit -m 'update runtime state'
           git pull --rebase origin state
           git push origin HEAD:state
