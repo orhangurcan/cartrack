@@ -1,0 +1,41 @@
+{
+  "format_version": 2,
+  "timezone": "Europe/Berlin",
+  "searches": [
+    {
+      "key": "bmw_f10_520d",
+      "label": "BMW 520d F10",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.%28C.CarType.N._.%28C.Manufacturer.BMW._.%28C.ModelGroup.5%EC%8B%9C%EB%A6%AC%EC%A6%88._.%28C.Model.5%EC%8B%9C%EB%A6%AC%EC%A6%88%20%28F10_%29._.%28Or.Badge.520d._.Badge.520d%20xDrive.%29%29%29%29%29_.Price.range%28..1400%29._.Mileage.range%28..110000%29.%29%22%2C%22title%22%3A%22BMW%20520d%20F10%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "mercedes_w212_2013plus",
+      "label": "Mercedes-Benz E-Class W212 2013+",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.%EB%B2%A4%EC%B8%A0._.%28C.ModelGroup.E-%ED%81%B4%EB%9E%98%EC%8A%A4._.%28C.Model.E-%ED%81%B4%EB%9E%98%EC%8A%A4%20W212._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Year.range%28201300..%29._.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22Mercedes-Benz%20E-Class%20W212%202013%2B%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "mercedes_w213",
+      "label": "Mercedes-Benz E-Class W213",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.%EB%B2%A4%EC%B8%A0._.%28C.ModelGroup.E-%ED%81%B4%EB%9E%98%EC%8A%A4._.%28C.Model.E-%ED%81%B4%EB%9E%98%EC%8A%A4%20W213._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22Mercedes-Benz%20E-Class%20W213%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "mercedes_c_w204_2013plus",
+      "label": "Mercedes-Benz C-Class W204 2013+",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.%EB%B2%A4%EC%B8%A0._.%28C.ModelGroup.C-%ED%81%B4%EB%9E%98%EC%8A%A4._.%28C.Model.C-%ED%81%B4%EB%9E%98%EC%8A%A4%20W204._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Year.range%28201300..%29._.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22Mercedes-Benz%20C-Class%20W204%202013%2B%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "mercedes_c_w205",
+      "label": "Mercedes-Benz C-Class W205",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.%EB%B2%A4%EC%B8%A0._.%28C.ModelGroup.C-%ED%81%B4%EB%9E%98%EC%8A%A4._.%28C.Model.C-%ED%81%B4%EB%9E%98%EC%8A%A4%20W205._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22Mercedes-Benz%20C-Class%20W205%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "bmw_3_f30_2013plus",
+      "label": "BMW 3 Series F30 2013+",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.BMW._.%28C.ModelGroup.3%EC%8B%9C%EB%A6%AC%EC%A6%88._.%28C.Model.3%EC%8B%9C%EB%A6%AC%EC%A6%88%20%28F30_%29._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Year.range%28201300..%29._.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22BMW%203%20Series%20F30%202013%2B%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    },
+    {
+      "key": "bmw_3_g20",
+      "label": "BMW 3 Series G20",
+      "search_url": "https://car.encar.com/list/car?page=1&search=%7B%22type%22%3A%22car%22%2C%22action%22%3A%22%28And.Hidden.N._.MultiViewHidden.N._.SellType.%EC%9D%BC%EB%B0%98._.%28Or.Separation.B._.Separation.F.%29_.ServiceCopyCar.ORIGINAL._.FuelType.%EB%94%94%EC%A0%A4._.Mileage.range%28..110000%29._.%28C.CarType.N._.%28C.Manufacturer.BMW._.%28C.ModelGroup.3%EC%8B%9C%EB%A6%AC%EC%A6%88._.%28C.Model.3%EC%8B%9C%EB%A6%AC%EC%A6%88%20%28G20_%29._.%28Or.BadgeGroup.%EB%94%94%EC%A0%A4%202WD._.BadgeGroup.%EB%94%94%EC%A0%A4%204WD.%29%29%29%29%29_.Price.range%28..1400%29.%29%22%2C%22title%22%3A%22BMW%203%20Series%20G20%22%2C%22toggle%22%3A%7B%7D%2C%22layer%22%3A%22%22%2C%22sort%22%3A%22MobileModifiedDate%22%7D"
+    }
+  ]
+}
