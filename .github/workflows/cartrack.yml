@@ -21,6 +21,7 @@ on:
       - 'tests/**'
       - 'requirements.txt'
       - 'owner_extra_searches.json'
+      - 'searches.json'
       - '.hourly-trigger'
       - '.github/workflows/cartrack.yml'
   pull_request:
@@ -30,6 +31,7 @@ on:
       - 'tests/**'
       - 'requirements.txt'
       - 'owner_extra_searches.json'
+      - 'searches.json'
       - '.github/workflows/cartrack.yml'
 
 concurrency:
@@ -82,7 +84,6 @@ jobs:
 
       - name: Run selected mode
         env:
-          SEARCHES_JSON: ${{ secrets.searchesjson }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.telegrambot }}
           TELEGRAM_CHAT_ID: ${{ secrets.telegramid }}
           STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
@@ -93,6 +94,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export SEARCHES_JSON="$(cat searches.json)"
           mode="watch"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             mode="${{ inputs.mode }}"
