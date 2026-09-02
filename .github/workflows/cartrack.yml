@@ -101,10 +101,37 @@ jobs:
           STATE_ENCRYPTION_KEY: ${{ secrets.statekey }}
         shell: bash
         run: |
-          test -n "$SEARCHES_JSON" || { echo 'Missing searchesjson secret'; exit 1; }
+          mode="watch"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+          fi
+
           test -n "$TELEGRAM_BOT_TOKEN" || { echo 'Missing telegrambot secret'; exit 1; }
           test -n "$TELEGRAM_CHAT_ID" || { echo 'Missing telegramid secret'; exit 1; }
-          test -n "$STATE_ENCRYPTION_KEY" || { echo 'Missing statekey secret'; exit 1; }
+
+          if [[ "$mode" == "watch" || "$mode" == "dry-run" ]]; then
+            test -n "$SEARCHES_JSON" || { echo 'Missing searchesjson secret'; exit 1; }
+            test -n "$STATE_ENCRYPTION_KEY" || { echo 'Missing statekey secret'; exit 1; }
+            python - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["SEARCHES_JSON"])
+if not isinstance(data, dict):
+    raise SystemExit("SEARCHES_JSON must be a JSON object")
+if int(data.get("format_version", 1)) != 2:
+    raise SystemExit("SEARCHES_JSON must use format_version 2")
+searches = data.get("searches")
+if not isinstance(searches, list) or not searches:
+    raise SystemExit("SEARCHES_JSON must contain a non-empty searches list")
+for row in searches:
+    if not isinstance(row, dict):
+        raise SystemExit("Every search config must be an object")
+    if not all(isinstance(row.get(key), str) and row[key] for key in ("key", "label", "search_url")):
+        raise SystemExit("Each search needs non-empty key, label and search_url")
+print(f"Validated SEARCHES_JSON with {len(searches)} search(es).")
+PY
+          fi
 
       - name: Run selected mode
         env:
